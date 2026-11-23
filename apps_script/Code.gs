@@ -39,6 +39,12 @@ function doPost(e) {
     if (action === "fetch") {
       return handleFetch(req);
     }
+    if (action === "get_tail") {
+      return handleGetTail(req);
+    }
+    if (action === "append_row") {
+      return handleAppendRow(req);
+    }
     if (action === "prepare_tab") {
       return handlePrepareTab(req);
     }
@@ -52,6 +58,52 @@ function doPost(e) {
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err && err.stack ? err.stack : err) });
   }
+}
+
+function handleGetTail(req) {
+  const ss = SpreadsheetApp.openById(req.source_id);
+  const sheet = req.sheet_name ? ss.getSheetByName(req.sheet_name) : ss.getSheets()[0];
+  if (!sheet) {
+    return jsonResponse({ ok: false, error: "Sheet not found: " + req.sheet_name });
+  }
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow === 0 || lastCol === 0) {
+    return jsonResponse({ ok: true, headers: [], tail_rows: [], last_row: 0 });
+  }
+  const headers = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  const count = Math.min(Math.max(1, Number(req.tail_rows || 5)), Math.max(0, lastRow - 1));
+  const tailRows = count > 0
+    ? sheet.getRange(lastRow - count + 1, 1, count, lastCol).getDisplayValues()
+    : [];
+  return jsonResponse({ ok: true, headers: headers, tail_rows: tailRows, last_row: lastRow });
+}
+
+function handleAppendRow(req) {
+  const ss = SpreadsheetApp.openById(req.source_id);
+  const sheet = req.sheet_name ? ss.getSheetByName(req.sheet_name) : ss.getSheets()[0];
+  if (!sheet) {
+    return jsonResponse({ ok: false, error: "Sheet not found: " + req.sheet_name });
+  }
+  const row = req.row;
+  if (!Array.isArray(row) || row.length === 0) {
+    return jsonResponse({ ok: false, error: "Missing non-empty row array." });
+  }
+  const lastRow = sheet.getLastRow();
+  if (req.date && lastRow >= 2) {
+    const existingDate = String(sheet.getRange(lastRow, 1).getDisplayValue()).trim();
+    if (existingDate === String(req.date).trim()) {
+      return jsonResponse({
+        ok: true,
+        skipped: true,
+        reason: "Row for date " + existingDate + " already exists.",
+        last_row: lastRow
+      });
+    }
+  }
+  sheet.appendRow(row);
+  SpreadsheetApp.flush();
+  return jsonResponse({ ok: true, appended: true, last_row: sheet.getLastRow() });
 }
 
 function handleFetch(req) {

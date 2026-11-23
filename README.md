@@ -8,9 +8,12 @@ A reproducible, strictly causal (zero lookahead bias) Python pipeline that fetch
 financial-ml-preprocessing-agent/
 ├── .github/
 │   └── workflows/
-│       └── run-pipeline.yml              # GitHub Actions CI/CD runner (on push & manual)
+│       └── run-pipeline.yml              # Daily 09:00 SGT & push-triggered GitHub Actions runner
+├── apps_script/
+│   └── Code.gs                           # Google Apps Script Web App bridge (read/append/publish)
+├── fetch_daily_data.py                   # Agent 1: Daily 44-asset market data fetcher & sheet appender
+├── pipeline.py                           # Agent 2: End-to-end causal ML preprocessing & ratio pipeline
 ├── GEMINI.md                             # Antigravity workspace rule for auto-pushing edits
-├── pipeline.py                           # End-to-end reproducible CLI pipeline
 ├── requirements.txt                      # Python dependencies
 ├── .env.example                          # Environment variable template
 ├── README.md                             # Usage & ML modeling guide

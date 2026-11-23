@@ -1,10 +1,19 @@
-name: Run Financial ML Preprocessing Pipeline
+name: Daily Financial Data Update & ML Preprocessing Pipeline
 
 on:
+  schedule:
+    # Runs daily at 09:00 Asia/Singapore (01:00 UTC)
+    - cron: "0 1 * * *"
   push:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      skip_daily_fetch:
+        description: "Skip Agent 1 daily market fetch (run ML preprocessing only)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -26,7 +35,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run preprocessing pipeline
+      - name: "Agent 1: Fetch daily market data & update Financial Data Updates sheet"
+        if: ${{ inputs.skip_daily_fetch != true }}
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+          SOURCE_SHEET_ID: ${{ secrets.SOURCE_SHEET_ID }}
+        run: |
+          if [ -n "$APPS_SCRIPT_URL" ] && [ -n "$APPS_SCRIPT_TOKEN" ] && [ -n "$SOURCE_SHEET_ID" ]; then
+            echo "Running Agent 1 (fetch_daily_data.py) via Apps Script bridge..."
+            python fetch_daily_data.py --backend webapp
+          else
+            echo "::notice::APPS_SCRIPT_URL, APPS_SCRIPT_TOKEN, or SOURCE_SHEET_ID not set; skipping Agent 1 daily sheet update."
+          fi
+
+      - name: "Agent 2: Run causal ML preprocessing & publish 5 tabs"
         env:
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
           APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
@@ -41,7 +64,7 @@ jobs:
             echo "Google Sheets API credentials found — running full end-to-end pipeline..."
             python pipeline.py --backend api
           else
-            echo "::notice::No Google Sheets cloud credentials set yet (APPS_SCRIPT_URL + APPS_SCRIPT_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON). Running offline verification against data/raw/financial_data_raw.csv."
+            echo "::notice::No Google Sheets cloud credentials set yet. Running offline verification against data/raw/financial_data_raw.csv."
             python pipeline.py --skip-fetch --skip-upload
           fi
 

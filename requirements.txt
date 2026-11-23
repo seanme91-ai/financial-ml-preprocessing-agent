@@ -1,4 +1,5 @@
 pandas>=2.2.0
 numpy>=1.26.0
+yfinance>=0.2.50
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
