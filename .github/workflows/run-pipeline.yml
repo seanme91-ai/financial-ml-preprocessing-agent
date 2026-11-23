@@ -28,15 +28,20 @@ jobs:
 
       - name: Run preprocessing pipeline
         env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SOURCE_SHEET_ID: ${{ secrets.SOURCE_SHEET_ID }}
           DEST_SHEET_ID: ${{ secrets.DEST_SHEET_ID }}
         run: |
-          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ] && [ -n "$SOURCE_SHEET_ID" ] && [ -n "$DEST_SHEET_ID" ]; then
-            echo "Google Sheets credentials found — running full end-to-end pipeline..."
+          if [ -n "$APPS_SCRIPT_URL" ] && [ -n "$APPS_SCRIPT_TOKEN" ] && [ -n "$SOURCE_SHEET_ID" ] && [ -n "$DEST_SHEET_ID" ]; then
+            echo "Apps Script bridge configured — running full end-to-end Google Sheets pipeline..."
+            python pipeline.py --backend webapp
+          elif [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ] && [ -n "$SOURCE_SHEET_ID" ] && [ -n "$DEST_SHEET_ID" ]; then
+            echo "Google Sheets API credentials found — running full end-to-end pipeline..."
             python pipeline.py --backend api
           else
-            echo "::notice::GOOGLE_SERVICE_ACCOUNT_JSON, SOURCE_SHEET_ID, or DEST_SHEET_ID secret is not set yet. Running offline verification against data/raw/financial_data_raw.csv."
+            echo "::notice::No Google Sheets cloud credentials set yet (APPS_SCRIPT_URL + APPS_SCRIPT_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON). Running offline verification against data/raw/financial_data_raw.csv."
             python pipeline.py --skip-fetch --skip-upload
           fi
 

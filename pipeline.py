@@ -23,6 +23,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -205,13 +207,23 @@ def run_cmd(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 
 def resolve_sheets_backend(requested: str = "auto") -> str:
-    """Select Google Sheets backend ('api' via service account or 'gsheets' via local CLI)."""
+    """Select Google Sheets backend ('webapp' via Apps Script, 'api' via service account, or 'gsheets' CLI)."""
+    has_webapp = bool(
+        os.environ.get("APPS_SCRIPT_URL", "").strip()
+        and os.environ.get("APPS_SCRIPT_TOKEN", "").strip()
+    )
     has_sa = bool(
         os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
         or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     )
     has_cli = shutil.which("gsheets") is not None
 
+    if requested == "webapp":
+        if not has_webapp:
+            raise RuntimeError(
+                "Requested --backend webapp, but APPS_SCRIPT_URL and/or APPS_SCRIPT_TOKEN is not set."
+            )
+        return "webapp"
     if requested == "api":
         if not has_sa:
             raise RuntimeError(
@@ -224,14 +236,52 @@ def resolve_sheets_backend(requested: str = "auto") -> str:
             raise RuntimeError("Requested --backend gsheets, but `gsheets` CLI is not on PATH.")
         return "gsheets"
 
+    if has_webapp:
+        return "webapp"
     if has_sa:
         return "api"
     if has_cli:
         return "gsheets"
     raise RuntimeError(
-        "No Google Sheets credentials available. Set GOOGLE_SERVICE_ACCOUNT_JSON (for GitHub Actions / API) "
-        "or ensure the `gsheets` CLI is on PATH, or pass --skip-fetch --skip-upload for offline runs."
+        "No Google Sheets credentials available. Set APPS_SCRIPT_URL + APPS_SCRIPT_TOKEN (Apps Script), "
+        "GOOGLE_SERVICE_ACCOUNT_JSON (Sheets API), ensure `gsheets` CLI is on PATH, "
+        "or pass --skip-fetch --skip-upload for offline runs."
     )
+
+
+def call_apps_script(payload: dict[str, Any], timeout: int = 180) -> dict[str, Any]:
+    """POST a JSON action to the deployed Google Apps Script Web App and parse its JSON response."""
+    url = os.environ.get("APPS_SCRIPT_URL", "").strip()
+    token = os.environ.get("APPS_SCRIPT_TOKEN", "").strip()
+    if not url or not token:
+        raise RuntimeError("APPS_SCRIPT_URL and APPS_SCRIPT_TOKEN must both be set.")
+
+    body = json.dumps({**payload, "token": token}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw_text = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Apps Script HTTP {exc.code}: {err_body}") from exc
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        snippet = raw_text[:300].replace("\n", " ")
+        raise RuntimeError(
+            "Apps Script returned non-JSON (check that deployment access is set to 'Anyone' "
+            f"and the /exec URL is correct). Response preview: {snippet}"
+        ) from exc
+
+    if not data.get("ok"):
+        raise RuntimeError(f"Apps Script error: {data.get('error', data)}")
+    return data
 
 
 def build_sheets_service() -> Any:
@@ -272,6 +322,38 @@ def fetch_raw_sheet(
     raw_csv.parent.mkdir(parents=True, exist_ok=True)
     chosen = resolve_sheets_backend(backend)
     print(f"[1/6] Fetching source sheet {source_id} ({sheet_name}) via {chosen} -> {raw_csv}")
+
+    if chosen == "webapp":
+        all_rows: list[list[str]] = []
+        start_row = 1
+        chunk_rows = 2500
+        while True:
+            resp = call_apps_script(
+                {
+                    "action": "fetch",
+                    "source_id": source_id,
+                    "sheet_name": sheet_name,
+                    "start_row": start_row,
+                    "num_rows": chunk_rows,
+                }
+            )
+            batch = resp.get("rows", [])
+            if not batch:
+                break
+            all_rows.extend(batch)
+            total_rows = int(resp.get("total_rows", len(all_rows)))
+            print(f"    fetched rows {start_row}..{start_row + len(batch) - 1} / {total_rows}")
+            if start_row + len(batch) - 1 >= total_rows or len(batch) < chunk_rows:
+                break
+            start_row += len(batch)
+        if not all_rows:
+            raise RuntimeError(f"Source sheet {source_id} ({sheet_name}) returned no rows.")
+        width = max(len(r) for r in all_rows)
+        with raw_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            for r in all_rows:
+                writer.writerow(r + [""] * (width - len(r)))
+        return
 
     if chosen == "api":
         service = build_sheets_service()
@@ -1561,15 +1643,81 @@ def publish_to_sheets_api(dest_id: str, tab_csv_map: list[tuple[str, Path, bool]
         service.spreadsheets().batchUpdate(spreadsheetId=dest_id, body={"requests": format_reqs}).execute()
 
 
+def publish_to_sheets_webapp(dest_id: str, tab_csv_map: list[tuple[str, Path, bool]]) -> None:
+    """Publish all tabs to destination Google Sheet via the Google Apps Script Web App bridge."""
+    for tab_idx, (tab_name, csv_path, freeze_col_a) in enumerate(tab_csv_map):
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            all_rows = list(csv.reader(f))
+        n_rows = len(all_rows)
+        n_cols = max(len(r) for r in all_rows) if all_rows else 1
+        print(f"  Uploading '{tab_name}' ({n_rows} rows x {n_cols} cols) via Apps Script...")
+
+        call_apps_script(
+            {
+                "action": "prepare_tab",
+                "dest_id": dest_id,
+                "tab_name": tab_name,
+                "rename_sheet1": tab_idx == 0,
+                "rows": n_rows,
+                "cols": n_cols,
+            }
+        )
+
+        # Keep each chunk well within Apps Script payload and execution limits
+        chunk_size = 400 if n_cols >= 80 else 1000
+        for start in range(0, n_rows, chunk_size):
+            end = min(start + chunk_size, n_rows)
+            chunk = []
+            for i in range(start, end):
+                casted = _cast_sheet_row(all_rows[i], is_header=(i == 0))
+                if len(casted) < n_cols:
+                    casted = casted + [""] * (n_cols - len(casted))
+                chunk.append(casted)
+            call_apps_script(
+                {
+                    "action": "write_chunk",
+                    "dest_id": dest_id,
+                    "tab_name": tab_name,
+                    "start_row": start + 1,
+                    "values": chunk,
+                }
+            )
+            print(f"    wrote rows {start + 1}..{end} / {n_rows}")
+
+        section_rows: list[int] = []
+        subheader_rows: list[int] = []
+        if tab_name == "Summary_and_Data_Quality":
+            for idx, r in enumerate(all_rows):
+                if idx > 0 and r and r[0].startswith("SECTION "):
+                    section_rows.append(idx + 1)  # 1-based row index for Apps Script
+                elif idx > 0 and r and r[0] in ("Metric", "Anomaly_ID", "Column"):
+                    subheader_rows.append(idx + 1)
+
+        call_apps_script(
+            {
+                "action": "format_tab",
+                "dest_id": dest_id,
+                "tab_name": tab_name,
+                "n_cols": n_cols,
+                "freeze_col_a": freeze_col_a,
+                "section_rows": section_rows,
+                "subheader_rows": subheader_rows,
+            }
+        )
+
+
 def publish_to_sheets(dest_id: str, tab_csv_map: list[tuple[str, Path, bool]], backend: str = "auto") -> None:
     """
-    Create/rename the 5 destination tabs, upload CSVs (Sheets API or gsheets CLI),
+    Create/rename the 5 destination tabs, upload CSVs (Apps Script, Sheets API, or gsheets CLI),
     and apply clean header formatting + freeze panes.
     """
     if not dest_id:
         raise ValueError("Destination Google Sheet ID is empty. Pass --dest-id or set DEST_SHEET_ID.")
     chosen = resolve_sheets_backend(backend)
     print(f"[6/6] Publishing {len(tab_csv_map)} tabs to destination Google Sheet ({chosen}): {dest_id}")
+    if chosen == "webapp":
+        publish_to_sheets_webapp(dest_id, tab_csv_map)
+        return
     if chosen == "api":
         publish_to_sheets_api(dest_id, tab_csv_map)
         return
@@ -1733,9 +1881,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["auto", "api", "gsheets"],
+        choices=["auto", "webapp", "api", "gsheets"],
         default="auto",
-        help="Google Sheets backend: auto (API if credentials set, else gsheets CLI), api, or gsheets",
+        help="Google Sheets backend: auto (webapp, then api, then gsheets CLI), webapp, api, or gsheets",
     )
     parser.add_argument("--skip-fetch", action="store_true", help="Skip downloading raw CSV from source Google Sheet")
     parser.add_argument("--skip-upload", action="store_true", help="Skip publishing processed CSVs to destination Google Sheet")

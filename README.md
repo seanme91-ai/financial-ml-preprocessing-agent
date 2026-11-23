@@ -64,13 +64,14 @@ py pipeline.py --skip-fetch
 This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflows/run-pipeline.yml), which runs automatically on every push to `main` (and manually from the **Actions** tab).
 
 - **Without secrets configured**: The workflow runs in offline verification mode (`--skip-fetch --skip-upload`) using `data/raw/financial_data_raw.csv` and uploads all 5 processed CSVs as a downloadable workflow artifact (`processed-ml-datasets`).
-- **With Google Sheets sync enabled**:
+- **With Google Sheets sync enabled (Option A — Google Apps Script, no Google Cloud needed):**
+  1. Open your destination Google Sheet and click **Extensions → Apps Script**.
+  2. Paste [`apps_script/Code.gs`](apps_script/Code.gs), replace `API_TOKEN` with a strong secret token, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*).
+  3. Add `APPS_SCRIPT_URL` (the `/exec` URL), `APPS_SCRIPT_TOKEN`, `SOURCE_SHEET_ID`, and `DEST_SHEET_ID` as GitHub repository secrets under **Settings → Secrets and variables → Actions**.
+- **With Google Sheets sync enabled (Option B — Google Cloud Service Account):**
   1. In Google Cloud Console, enable the **Google Sheets API**, create a **Service Account**, and download its JSON key.
-  2. Share your source Google Sheet (**Viewer**) and destination Google Sheet (**Editor**) with the service account's email address (`...@...iam.gserviceaccount.com`).
-  3. In your GitHub repo go to **Settings → Secrets and variables → Actions** and add three repository secrets:
-     - `GOOGLE_SERVICE_ACCOUNT_JSON`: full contents of the downloaded JSON key
-     - `SOURCE_SHEET_ID`: your source Google Sheet ID
-     - `DEST_SHEET_ID`: your destination Google Sheet ID
+  2. Share your source Google Sheet (**Viewer**) and destination Google Sheet (**Editor**) with the service account's email address.
+  3. Add `GOOGLE_SERVICE_ACCOUNT_JSON`, `SOURCE_SHEET_ID`, and `DEST_SHEET_ID` as GitHub repository secrets.
 
 ## Destination Google Sheet Tabs
 
