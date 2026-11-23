@@ -20,9 +20,11 @@ import csv
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -249,39 +251,57 @@ def resolve_sheets_backend(requested: str = "auto") -> str:
     )
 
 
-def call_apps_script(payload: dict[str, Any], timeout: int = 180) -> dict[str, Any]:
-    """POST a JSON action to the deployed Google Apps Script Web App and parse its JSON response."""
+def call_apps_script(payload: dict[str, Any], timeout: int = 90, max_retries: int = 4) -> dict[str, Any]:
+    """POST a JSON action to the deployed Google Apps Script Web App with retries on transient errors."""
     url = os.environ.get("APPS_SCRIPT_URL", "").strip()
     token = os.environ.get("APPS_SCRIPT_TOKEN", "").strip()
     if not url or not token:
         raise RuntimeError("APPS_SCRIPT_URL and APPS_SCRIPT_TOKEN must both be set.")
 
     body = json.dumps({**payload, "token": token}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "text/plain; charset=utf-8"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_text = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"Apps Script HTTP {exc.code}: {err_body}") from exc
+    action = payload.get("action", "unknown")
+    last_exc: Exception | None = None
 
-    try:
-        data = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        snippet = raw_text[:300].replace("\n", " ")
-        raise RuntimeError(
-            "Apps Script returned non-JSON (check that deployment access is set to 'Anyone' "
-            f"and the /exec URL is correct). Response preview: {snippet}"
-        ) from exc
+    for attempt in range(1, max_retries + 1):
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw_text = resp.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                snippet = raw_text[:300].replace("\n", " ")
+                raise RuntimeError(
+                    "Apps Script returned non-JSON (check that deployment access is set to 'Anyone' "
+                    f"and the /exec URL is correct). Response preview: {snippet}"
+                ) from exc
+            if not data.get("ok"):
+                raise RuntimeError(f"Apps Script error: {data.get('error', data)}")
+            return data
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")[:500]
+            last_exc = RuntimeError(f"Apps Script HTTP {exc.code}: {err_body}")
+            retryable = exc.code in (429, 500, 502, 503, 504)
+        except (TimeoutError, socket.timeout, urllib.error.URLError, OSError) as exc:
+            last_exc = exc
+            retryable = True
 
-    if not data.get("ok"):
-        raise RuntimeError(f"Apps Script error: {data.get('error', data)}")
-    return data
+        if not retryable or attempt == max_retries:
+            break
+        wait_s = 5 * (2 ** (attempt - 1))
+        print(
+            f"    [WARN] Apps Script '{action}' attempt {attempt}/{max_retries} failed ({last_exc}); "
+            f"retrying in {wait_s}s...",
+            flush=True,
+        )
+        time.sleep(wait_s)
+
+    raise RuntimeError(f"Apps Script '{action}' failed after {max_retries} attempts: {last_exc}") from last_exc
 
 
 def build_sheets_service() -> Any:
@@ -326,7 +346,7 @@ def fetch_raw_sheet(
     if chosen == "webapp":
         all_rows: list[list[str]] = []
         start_row = 1
-        chunk_rows = 2500
+        chunk_rows = 1500
         while True:
             resp = call_apps_script(
                 {
