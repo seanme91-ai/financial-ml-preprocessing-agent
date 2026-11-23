@@ -1,0 +1,48 @@
+name: Run Financial ML Preprocessing Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run preprocessing pipeline
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SOURCE_SHEET_ID: ${{ secrets.SOURCE_SHEET_ID }}
+          DEST_SHEET_ID: ${{ secrets.DEST_SHEET_ID }}
+        run: |
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ] && [ -n "$SOURCE_SHEET_ID" ] && [ -n "$DEST_SHEET_ID" ]; then
+            echo "Google Sheets credentials found — running full end-to-end pipeline..."
+            python pipeline.py --backend api
+          else
+            echo "::notice::GOOGLE_SERVICE_ACCOUNT_JSON, SOURCE_SHEET_ID, or DEST_SHEET_ID secret is not set yet. Running offline verification against data/raw/financial_data_raw.csv."
+            python pipeline.py --skip-fetch --skip-upload
+          fi
+
+      - name: Upload processed CSV outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-ml-datasets
+          path: data/processed/*.csv
+          retention-days: 14
