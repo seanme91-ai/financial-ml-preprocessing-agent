@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import (
     cophenet,
+    dendrogram,
     fcluster,
     leaves_list,
     linkage,
@@ -160,6 +161,7 @@ SUBHEADER_TOKENS = {
     "Step",
     "Dendrogram_Order",
     "Asset_Order",
+    "Leaf_No",
 }
 
 
@@ -1308,7 +1310,25 @@ def run_hierarchical_clustering(
     Z_ward_olo = optimal_leaf_ordering(linkages["ward"], cond_dist)
     leaf_order = list(leaves_list(Z_ward_olo))
 
+    # Extract exact U-shaped dendrogram branch coordinates (scaled to Leaf Index 1..p)
+    dendro_raw = dendrogram(Z_ward_olo, no_plot=True)
+    # Cut height midway between (p - opt_k_ward - 1)th and (p - opt_k_ward)th merge
     opt_k_ward = best_k_by_method["ward"]
+    merge_dists_sorted = np.sort(Z_ward_olo[:, 2])
+    cut_idx = max(0, p - opt_k_ward - 1)
+    cut_height = (
+        0.5 * (float(merge_dists_sorted[cut_idx]) + float(merge_dists_sorted[min(cut_idx + 1, p - 2)]))
+        if p > 2
+        else float(merge_dists_sorted[0])
+    )
+    dendro_branches: list[dict[str, Any]] = []
+    for xs, ys in zip(dendro_raw["icoord"], dendro_raw["dcoord"]):
+        # SciPy leaf positions are 5, 15, 25, ... -> map to 1.0, 2.0, 3.0, ...
+        x_leaf = [round((float(v) - 5.0) / 10.0 + 1.0, 4) for v in xs]
+        y_dist = [round(float(v), 4) for v in ys]
+        is_intra = max(y_dist) <= cut_height + 1e-9
+        dendro_branches.append({"x": x_leaf, "y": y_dist, "is_intra": is_intra})
+
     labs_ward_opt = fcluster(linkages["ward"], t=opt_k_ward, criterion="maxclust")
     labs_ward_k5 = fcluster(linkages["ward"], t=5, criterion="maxclust")
     labs_ward_k8 = fcluster(linkages["ward"], t=8, criterion="maxclust")
@@ -1421,6 +1441,8 @@ def run_hierarchical_clustering(
         "nn_corr": nn_corr,
         "nn_dist": nn_dist,
         "merge_history": merge_history,
+        "dendro_branches": dendro_branches,
+        "cut_height": cut_height,
     }
 
 
@@ -1556,9 +1578,9 @@ def build_executive_summary(
     rows.append(["SECTION 1: AGENT 3 DATA EXPLORATION — RUN METADATA & UNIVERSE DESIGN"])
     rows.append(["Metric", "Value", "Details / Methodology", "Status"])
     meta_items = [
-        ("Agent Role", "Agent 3: Data Exploration (PCA, Rolling PCA, Factor Analysis, Hierarchical Clustering)", "Consumes Agent 2 ML_Ready_Dataset and publishes 9 structured analytical tabs", "Active"),
+        ("Agent Role", "Agent 3: Data Exploration (PCA, Rolling PCA, Factor Analysis, Hierarchical Clustering)", "Consumes Agent 2 ML_Ready_Dataset and publishes 10 formatted analytical & visual tabs", "Active"),
         ("Source Google Sheet ID (Agent 2)", source_id or "Local CSV", "Tab: ML_Ready_Dataset (strictly causal stationary features)", "Verified"),
-        ("Destination Google Sheet ID (Agent 3)", dest_id or "Local CSV", "Data Exploration - PCA, FA, Clustering (9 tabs)", "Published"),
+        ("Destination Google Sheet ID (Agent 3)", dest_id or "Local CSV", "Data Exploration - PCA, FA, Clustering (10 tabs incl. Visual_Dashboard, color scales & 10 charts)", "Published"),
         ("Primary Analytical Universe", f"{len(cols)} Daily-Traded Multi-Asset Series (daily_35)", "30 daily price/FX log-returns + 5 daily sovereign/money-market yield diffs (Equities 10, FI ETFs 3, Commodities 11, FX 6, Yields 5)", "Clean"),
         ("Excluded from Primary Rolling Panel", "7 Stepped/Monthly Rates + 2 Late-Inception Series", "Stepped policy rates (Fed/ECB/BOJ/HK/CN LPR/SG) are 0 on 95.5%-99.8% of days (degenerate in 252d rolling windows); BNDX/CN5Y-LPR analyzed in Sensitivity C", "Documented"),
         ("Sample Window (is_core_ml_ready == 1)", f"{len(dates):,} trading weekdays ({dates.iloc[0]} to {dates.iloc[-1]})", "Zero missing values; ~18.7 years spanning GFC, Euro crisis, China 2015, COVID-19, 2022 inflation shock, and 2023-2026 regime", "Zero NaNs"),
@@ -1622,7 +1644,8 @@ def build_executive_summary(
     rows.append(["Tab_Name", "Granularity", "Primary Contents", "Recommended Usage"])
     tab_guide = [
         ("Executive_Summary", "Overview", "Run metadata, key findings across all 4 methods, 5-universe sensitivity table, tab dictionary", "Start here for executive diagnostics and methodological caveats"),
-        ("PCA_Overview_and_Loadings", "35 Components / 35 Assets", "Scree table (Eigenvalues, Horn PA 95th pct, Marchenko-Pastur RMT), Correlation Loadings (PC1-PC12), Unit-Norm Eigenvectors (PC1-PC10), Asset % Contributions", "Inspect orthogonal macro risk drivers and build eigenportfolios"),
+        ("Visual_Dashboard", "10 Interactive Charts + Leaf Key", "PCA Scree Plot (with PA95 & MP bounds), Variance Explained, Rolling Absorption Ratios, Stock-Bond Regime Flip, AR5 Z-Score & EffRank, Cumulative PC Trends, MLFA Factor Variance, Optimal-k Silhouette, Ward Dendrogram + Leaf Key, HRP Weights", "Visual overview of all 4 statistical methods in one gallery"),
+        ("PCA_Overview_and_Loadings", "35 Components / 35 Assets", "Scree table (Eigenvalues, Horn PA 95th pct, Marchenko-Pastur RMT), heatmap-shaded Correlation Loadings (PC1-PC12), Unit-Norm Eigenvectors (PC1-PC10), Asset % Contributions", "Inspect orthogonal macro risk drivers and build eigenportfolios"),
         ("PCA_Scores_TimeSeries", "4,825 Days x 10 PCs", "Daily standardized PC1-PC10 time series (sign-oriented: PC1+ = Risk-On)", "Exploratory macro factor attribution & regime visualization"),
         ("Rolling_PCA_Dynamics", "4,574 Days x 31 Metrics", "Strictly causal trailing 252d & 63d Rolling PCA: PC1-PC5 var %, Absorption Ratios, causal AR5 Z-score, Effective Rank, 21d PC1 drift, bellwether loadings, Stock-Bond coupling, Systemic Regime", "Zero-lookahead systemic risk features safe for live ML / risk-off triggers"),
         ("Rolling_PCA_Loadings_Snapshots", "Annual + Stress Peaks", "Annual regime averages (2009-2026), year-end & latest PC1 loadings for all 35 assets (with stability stats), top 12 historical systemic stress peaks", "Track structural beta drift (e.g. Stock-Bond correlation flip in 2022+)"),
@@ -2135,8 +2158,581 @@ def build_corr_dist_sheet(cols: list[str], R: np.ndarray, hc_res: dict[str, Any]
     return normalize_rect(rows)
 
 
+def build_visual_dashboard_sheet(
+    cols: list[str],
+    pca_res: dict[str, Any],
+    roll_res: dict[str, Any],
+    fa_res: dict[str, Any],
+    hc_res: dict[str, Any],
+) -> tuple[list[list[Any]], dict[str, Any]]:
+    """
+    Build the Visual_Dashboard tab:
+      - Rows 1-2: Executive dashboard header banner
+      - Rows 4-103 (Cols A-U): Open visual canvas hosting 10 native embedded Google Sheets charts
+      - Rows 105-141 (Cols A-F): Dendrogram Leaf Index Reference Key (1..35) directly below the Dendrogram
+      - Cols W-AM (0-based 22..38): Compact helper series powering Rolling PCA, Cumulative PC, and Dendrogram charts
+    """
+    dyn_df = roll_res["dynamics_df"].reset_index(drop=True)
+    # Sample every 5 trading days (~weekly) while guaranteeing exact latest date is included
+    w_idxs = list(range(0, len(dyn_df), 5))
+    if w_idxs[-1] != len(dyn_df) - 1:
+        w_idxs.append(len(dyn_df) - 1)
+    w_dyn = dyn_df.iloc[w_idxs].reset_index(drop=True)
+
+    # Weekly-sampled cumulative standardized PC1..PC3 scores (smooth macro trend lines)
+    sc_df = pca_res["scores_df"].reset_index(drop=True)
+    cum_pc1 = sc_df["PC1"].cumsum()
+    cum_pc2 = sc_df["PC2"].cumsum()
+    cum_pc3 = sc_df["PC3"].cumsum()
+    s_idxs = list(range(0, len(sc_df), 5))
+    if s_idxs[-1] != len(sc_df) - 1:
+        s_idxs.append(len(sc_df) - 1)
+
+    # Dendrogram branch coordinates (34 branches * 5 rows + 2 rows for cut-height horizontal threshold)
+    # Use non-blank X with blank Y on separator rows so Google Sheets LINE charts cleanly break segments
+    dendro_rows: list[list[Any]] = []
+    for br in hc_res["dendro_branches"]:
+        for xv, yv in zip(br["x"], br["y"]):
+            if br["is_intra"]:
+                dendro_rows.append([xv, yv, "", ""])
+            else:
+                dendro_rows.append([xv, "", yv, ""])
+        # Non-blank X + blank Y breaks the polyline cleanly with interpolateNulls=false
+        dendro_rows.append([br["x"][-1], "", "", ""])
+    cut_h = round(float(hc_res["cut_height"]), 4)
+    dendro_rows.append([1.0, "", "", cut_h])
+    dendro_rows.append([float(len(cols)), "", "", cut_h])
+
+    # Determine required grid height (covers dashboard canvas + leaf key + weekly helper rows)
+    leaf_key_start = 104  # 0-based row 104 -> Sheet Row 105
+    n_rows = max(leaf_key_start + 2 + len(cols), 2 + len(w_dyn), 2 + len(s_idxs), 2 + len(dendro_rows))
+    n_cols = 39  # Col A (0) .. Col AM (38)
+    grid: list[list[Any]] = [["" for _ in range(n_cols)] for _ in range(n_rows)]
+
+    # Header banner on Cols A..T
+    grid[0][0] = "VISUAL DASHBOARD — PCA, ROLLING PCA, FACTOR ANALYSIS & HIERARCHICAL CLUSTERING"
+    grid[1][0] = (
+        f"10 Live Native Charts | Sample: {sc_df['Date'].iloc[0]} to {sc_df['Date'].iloc[-1]} "
+        f"({len(cols)} Daily Assets) | Scroll right (Cols W-AM) for compact chart helper tables; "
+        f"scroll down (Row 105) for Dendrogram Leaf Index Key (1-35)."
+    )
+
+    # Dendrogram Leaf Index Reference Key directly below Chart 9 (Rows 105..141, Cols A..G)
+    grid[leaf_key_start][0] = "SECTION: WARD DENDROGRAM LEAF INDEX REFERENCE KEY (X-AXIS POSITIONS 1 TO 35)"
+    grid[leaf_key_start + 1][0:7] = [
+        "Leaf_No",
+        "Asset",
+        "Asset_Class",
+        f"Ward_Cluster_k{hc_res['opt_k_ward']}",
+        "Cluster_Label",
+        "HRP_Weight_Pct",
+        "Nearest_Neighbor",
+    ]
+    for pos, idx in enumerate(hc_res["leaf_order"], start=1):
+        r = leaf_key_start + 1 + pos
+        cid = int(hc_res["labs_ward_opt"][idx])
+        grid[r][0:7] = [
+            pos,
+            asset_name(cols[idx]),
+            asset_class(cols[idx]),
+            cid,
+            hc_res["cluster_labels_map"][cid],
+            fmt_num(100.0 * hc_res["hrp_weights"][idx], 2),
+            f"{hc_res['nn_asset'][idx]} ({hc_res['nn_corr'][idx]:+.2f})",
+        ]
+
+    # Helper Block 1: Weekly Rolling PCA Time Series (Cols W..AE -> indices 22..30)
+    grid[0][22] = "CHART HELPER 1: WEEKLY ROLLING PCA (252D CAUSAL)"
+    grid[1][22:31] = [
+        "Date",
+        "PC1_Var_Pct",
+        "AR3_Pct",
+        "AR5_Pct",
+        "AR5_Causal_Z252",
+        "Effective_Rank",
+        "PC1_Load_SP500",
+        "PC1_Load_TLT",
+        "Stock_Bond_PC1_Product",
+    ]
+    for i, row in w_dyn.iterrows():
+        r = 2 + i
+        grid[r][22:31] = [
+            str(row["Date"]),
+            fmt_num(row["PC1_Var_Pct"], 2),
+            fmt_num(row["Absorption_Ratio_Top3"], 2),
+            fmt_num(row["Absorption_Ratio_Top5"], 2),
+            fmt_num(row["AR5_Causal_Z252"], 2) if pd.notna(row["AR5_Causal_Z252"]) else "",
+            fmt_num(row["Effective_Rank_Entropy"], 2),
+            fmt_num(row["PC1_Load_SP500"], 3) if "PC1_Load_SP500" in row else "",
+            fmt_num(row["PC1_Load_TLT"], 3) if "PC1_Load_TLT" in row else "",
+            fmt_num(row["Stock_Bond_PC1_Product"], 3) if "Stock_Bond_PC1_Product" in row else "",
+        ]
+
+    # Helper Block 2: Weekly Cumulative Standardized PCA Scores (Cols AF..AI -> indices 31..34)
+    grid[0][31] = "CHART HELPER 2: CUMULATIVE PC SCORES"
+    grid[1][31:35] = [
+        "Date",
+        "Cum_PC1_GlobalRiskOn",
+        "Cum_PC2_USRates",
+        "Cum_PC3_AsiaChina",
+    ]
+    for k_i, orig_i in enumerate(s_idxs):
+        r = 2 + k_i
+        grid[r][31:35] = [
+            str(sc_df["Date"].iloc[orig_i]),
+            fmt_num(float(cum_pc1.iloc[orig_i]), 2),
+            fmt_num(float(cum_pc2.iloc[orig_i]), 2),
+            fmt_num(float(cum_pc3.iloc[orig_i]), 2),
+        ]
+
+    # Helper Block 3: Exact Ward Dendrogram Branch Coordinates (Cols AJ..AM -> indices 35..38)
+    grid[0][35] = "CHART HELPER 3: WARD DENDROGRAM COORDS"
+    grid[1][35:39] = [
+        "Leaf_X",
+        "Intra_Cluster_Branches",
+        "Inter_Cluster_Branches",
+        f"Optimal_Cut_k{hc_res['opt_k_ward']}",
+    ]
+    for k_i, drow in enumerate(dendro_rows):
+        grid[2 + k_i][35:39] = drow
+
+    dash_meta = {
+        "n_weekly_roll": len(w_dyn),
+        "n_weekly_scores": len(s_idxs),
+        "n_dendro_rows": len(dendro_rows),
+        "leaf_key_start": leaf_key_start,
+        "cut_height": cut_h,
+    }
+    return grid, dash_meta
+
+
 # =============================================================================
-# 9. CSV SAVING & MULTI-BACKEND GOOGLE SHEETS PUBLISHING
+# 9. COLOR SCALES & NATIVE GOOGLE SHEETS CHART SPECIFICATIONS
+# =============================================================================
+
+
+def _find_row_index(all_rows: list[list[str]], prefix: str, start_after: int = 0) -> int | None:
+    for idx in range(start_after, len(all_rows)):
+        r = all_rows[idx]
+        if r and str(r[0]).strip().startswith(prefix):
+            return idx
+    return None
+
+
+def _count_table_rows(all_rows: list[list[str]], data_start: int) -> int:
+    cnt = 0
+    for idx in range(data_start, len(all_rows)):
+        r = all_rows[idx]
+        if not r or str(r[0]).strip() == "":
+            break
+        cnt += 1
+    return cnt
+
+
+def build_color_scale_specs(
+    tab_rows_map: dict[str, list[list[str]]],
+    fa_res: dict[str, Any],
+    hc_res: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Build declarative conditional-formatting color-scale rules dynamically from actual CSV row offsets.
+    All row/col bounds are 0-based [start, end) (end exclusive).
+    """
+    specs: list[dict[str, Any]] = []
+
+    def add_grad(
+        tab: str,
+        sr: int,
+        er: int,
+        sc: int,
+        ec: int,
+        min_v: float,
+        max_v: float,
+        min_hex: str,
+        max_hex: str,
+        mid_v: float | None = None,
+        mid_hex: str | None = None,
+    ) -> None:
+        if er <= sr or ec <= sc:
+            return
+        specs.append(
+            {
+                "tab": tab,
+                "start_row": sr,
+                "end_row": er,
+                "start_col": sc,
+                "end_col": ec,
+                "min_val": min_v,
+                "max_val": max_v,
+                "min_hex": min_hex,
+                "max_hex": max_hex,
+                "mid_val": mid_v,
+                "mid_hex": mid_hex,
+            }
+        )
+
+    # 1. Correlation_and_Distance_Matrix: 35x35 Pearson Corr (Blue-White-Red) + Distance (Green-Yellow-Red)
+    corr_rows = tab_rows_map.get("Correlation_and_Distance_Matrix", [])
+    s1 = _find_row_index(corr_rows, "SECTION 1:")
+    if s1 is not None:
+        n1 = _count_table_rows(corr_rows, s1 + 2)
+        add_grad("Correlation_and_Distance_Matrix", s1 + 2, s1 + 2 + n1, 2, 2 + n1, -1.0, 1.0, "#5B9BD5", "#E67C73", 0.0, "#FFFFFF")
+    s2 = _find_row_index(corr_rows, "SECTION 2:")
+    if s2 is not None:
+        n2 = _count_table_rows(corr_rows, s2 + 2)
+        add_grad("Correlation_and_Distance_Matrix", s2 + 2, s2 + 2 + n2, 2, 2 + n2, 0.0, 1.0, "#63BE7B", "#F8696B", 0.5, "#FFEB84")
+
+    # 2. PCA_Overview_and_Loadings: Scree Eigenvalues, Loadings PC1-12, R2, Eigenvectors, Contributions
+    pca_rows = tab_rows_map.get("PCA_Overview_and_Loadings", [])
+    ps1 = _find_row_index(pca_rows, "SECTION 1:")
+    if ps1 is not None:
+        n_pc = _count_table_rows(pca_rows, ps1 + 2)
+        add_grad("PCA_Overview_and_Loadings", ps1 + 2, ps1 + 2 + n_pc, 1, 2, 0.0, 7.0, "#FFFFFF", "#6FA8DC")
+    ps2 = _find_row_index(pca_rows, "SECTION 2:")
+    if ps2 is not None:
+        n_a = _count_table_rows(pca_rows, ps2 + 2)
+        add_grad("PCA_Overview_and_Loadings", ps2 + 2, ps2 + 2 + n_a, 3, 15, -0.8, 0.8, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+        add_grad("PCA_Overview_and_Loadings", ps2 + 2, ps2 + 2 + n_a, 15, 17, 0.0, 1.0, "#FFFFFF", "#63BE7B")
+    ps3 = _find_row_index(pca_rows, "SECTION 3:")
+    if ps3 is not None:
+        n_a = _count_table_rows(pca_rows, ps3 + 2)
+        add_grad("PCA_Overview_and_Loadings", ps3 + 2, ps3 + 2 + n_a, 3, 13, -0.45, 0.45, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+    ps4 = _find_row_index(pca_rows, "SECTION 4:")
+    if ps4 is not None:
+        n_a = _count_table_rows(pca_rows, ps4 + 2)
+        add_grad("PCA_Overview_and_Loadings", ps4 + 2, ps4 + 2 + n_a, 3, 13, 0.0, 25.0, "#FFFFFF", "#6FA8DC")
+
+    # 3. Rolling_PCA_Loadings_Snapshots: Annual AR5 & Stock-Bond flip, YE PC1 Loadings heatmap, Stress peaks
+    rs_rows = tab_rows_map.get("Rolling_PCA_Loadings_Snapshots", [])
+    rs1 = _find_row_index(rs_rows, "SECTION 1:")
+    if rs1 is not None:
+        n_yr = _count_table_rows(rs_rows, rs1 + 2)
+        add_grad("Rolling_PCA_Loadings_Snapshots", rs1 + 2, rs1 + 2 + n_yr, 4, 6, 48.0, 62.0, "#63BE7B", "#E67C73", 55.0, "#FFFFFF")
+        add_grad("Rolling_PCA_Loadings_Snapshots", rs1 + 2, rs1 + 2 + n_yr, 12, 13, -0.6, 0.6, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+    rs2 = _find_row_index(rs_rows, "SECTION 2:")
+    if rs2 is not None:
+        n_a = _count_table_rows(rs_rows, rs2 + 2)
+        hdr2 = rs_rows[rs2 + 1]
+        ye_end = next((j for j, h in enumerate(hdr2) if h == "Hist_Mean"), len(hdr2))
+        add_grad("Rolling_PCA_Loadings_Snapshots", rs2 + 2, rs2 + 2 + n_a, 2, ye_end, -0.8, 0.8, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+        latest_col = next((j for j, h in enumerate(hdr2) if h == "Latest_Date_Val"), None)
+        if latest_col is not None:
+            add_grad("Rolling_PCA_Loadings_Snapshots", rs2 + 2, rs2 + 2 + n_a, latest_col, latest_col + 1, -0.8, 0.8, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+    rs3 = _find_row_index(rs_rows, "SECTION 3:")
+    if rs3 is not None:
+        n_pk = _count_table_rows(rs_rows, rs3 + 2)
+        add_grad("Rolling_PCA_Loadings_Snapshots", rs3 + 2, rs3 + 2 + n_pk, 2, 3, 55.0, 62.0, "#FFFFFF", "#E67C73")
+
+    # 4. Rolling_PCA_Dynamics: AR5, Causal AR5 Z-Score, Stock-Bond Product
+    rd_rows = tab_rows_map.get("Rolling_PCA_Dynamics", [])
+    if len(rd_rows) > 2:
+        hdr_rd = rd_rows[0]
+        n_rd = len(rd_rows)
+        if "Absorption_Ratio_Top5" in hdr_rd:
+            c = hdr_rd.index("Absorption_Ratio_Top5")
+            add_grad("Rolling_PCA_Dynamics", 1, n_rd, c, c + 1, 47.0, 62.0, "#63BE7B", "#E67C73", 55.0, "#FFFFFF")
+        if "AR5_Causal_Z252" in hdr_rd:
+            c = hdr_rd.index("AR5_Causal_Z252")
+            add_grad("Rolling_PCA_Dynamics", 1, n_rd, c, c + 1, -2.0, 2.5, "#63BE7B", "#E67C73", 0.0, "#FFFFFF")
+        if "Stock_Bond_PC1_Product" in hdr_rd:
+            c = hdr_rd.index("Stock_Bond_PC1_Product")
+            add_grad("Rolling_PCA_Dynamics", 1, n_rd, c, c + 1, -0.7, 0.7, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+
+    # 5. Factor_Analysis_Results: Asset KMO, Communality h2, Varimax Loadings, Promax Pattern, Factor Corr Phi
+    fa_rows = tab_rows_map.get("Factor_Analysis_Results", [])
+    m = fa_res["m"]
+    fs3 = _find_row_index(fa_rows, "SECTION 3:")
+    if fs3 is not None:
+        n_a = _count_table_rows(fa_rows, fs3 + 2)
+        add_grad("Factor_Analysis_Results", fs3 + 2, fs3 + 2 + n_a, 2, 3, 0.55, 0.95, "#FCE4D6", "#63BE7B", 0.75, "#FFFFFF")
+        add_grad("Factor_Analysis_Results", fs3 + 2, fs3 + 2 + n_a, 4, 5, 0.0, 1.0, "#FFFFFF", "#63BE7B")
+        add_grad("Factor_Analysis_Results", fs3 + 2, fs3 + 2 + n_a, 7, 7 + m, -0.85, 0.85, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+    fs4 = _find_row_index(fa_rows, "SECTION 4:")
+    if fs4 is not None:
+        n_a = _count_table_rows(fa_rows, fs4 + 2)
+        add_grad("Factor_Analysis_Results", fs4 + 2, fs4 + 2 + n_a, 2, 2 + m, -0.85, 0.85, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+    fs5 = _find_row_index(fa_rows, "SECTION 5:")
+    if fs5 is not None:
+        n_f = _count_table_rows(fa_rows, fs5 + 2)
+        add_grad("Factor_Analysis_Results", fs5 + 2, fs5 + 2 + n_f, 2, 2 + m, -0.6, 0.6, "#6BAED6", "#E67C73", 0.0, "#FFFFFF")
+
+    # 6. Hierarchical_Clustering: Benchmark Silhouette & Gap, Asset Silhouette/NN_Corr/HRP, Cluster Profiles
+    hc_rows = tab_rows_map.get("Hierarchical_Clustering", [])
+    hs1 = _find_row_index(hc_rows, "SECTION 1:")
+    if hs1 is not None:
+        n_b = _count_table_rows(hc_rows, hs1 + 2)
+        add_grad("Hierarchical_Clustering", hs1 + 2, hs1 + 2 + n_b, 3, 4, 0.0, 0.30, "#FFFFFF", "#63BE7B")
+        add_grad("Hierarchical_Clustering", hs1 + 2, hs1 + 2 + n_b, 8, 9, 0.0, 0.45, "#FFFFFF", "#63BE7B")
+    hs2 = _find_row_index(hc_rows, "SECTION 2:")
+    if hs2 is not None:
+        n_a = _count_table_rows(hc_rows, hs2 + 2)
+        add_grad("Hierarchical_Clustering", hs2 + 2, hs2 + 2 + n_a, 10, 11, -0.15, 0.60, "#F8696B", "#63BE7B", 0.15, "#FFFFFF")
+        add_grad("Hierarchical_Clustering", hs2 + 2, hs2 + 2 + n_a, 12, 13, 0.0, 1.0, "#FFFFFF", "#63BE7B")
+        add_grad("Hierarchical_Clustering", hs2 + 2, hs2 + 2 + n_a, 15, 16, 1.0, 6.6, "#FFFFFF", "#6FA8DC")
+    hs3 = _find_row_index(hc_rows, "SECTION 3:")
+    if hs3 is not None:
+        n_c = _count_table_rows(hc_rows, hs3 + 2)
+        add_grad("Hierarchical_Clustering", hs3 + 2, hs3 + 2 + n_c, 3, 4, 0.0, 0.90, "#FFFFFF", "#63BE7B")
+        add_grad("Hierarchical_Clustering", hs3 + 2, hs3 + 2 + n_c, 8, 9, 3.0, 23.0, "#FFFFFF", "#6FA8DC")
+
+    return specs
+
+
+def build_chart_specs(
+    tab_rows_map: dict[str, list[list[str]]],
+    dash_meta: dict[str, Any],
+    fa_res: dict[str, Any],
+    hc_res: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Build declarative specifications for 10 native Google Sheets charts placed in a clean
+    2-column x 5-row executive gallery on Visual_Dashboard.
+    All ranges are 0-based [start, end) (end exclusive), including header row (headerCount=1).
+    """
+    charts: list[dict[str, Any]] = []
+    n_wr = dash_meta["n_weekly_roll"]
+    n_ws = dash_meta["n_weekly_scores"]
+    n_dn = dash_meta["n_dendro_rows"]
+
+    # Dynamic row lookup for Factor Analysis Section 2 (F1..Fm variance summary)
+    fa_rows = tab_rows_map.get("Factor_Analysis_Results", [])
+    fs2 = _find_row_index(fa_rows, "SECTION 2:") or 13
+    fa_hdr_row = fs2 + 1
+    fa_end_row = fa_hdr_row + 1 + fa_res["m"]
+
+    # Dynamic row lookup for Hierarchical Clustering Section 1 (Ward k=2..12) and Section 2 (35 assets)
+    hc_rows = tab_rows_map.get("Hierarchical_Clustering", [])
+    hs1 = _find_row_index(hc_rows, "SECTION 1:") or 0
+    ward_hdr_row = hs1 + 1
+    ward_end_row = ward_hdr_row + 1 + 11  # k=2..12 -> 11 Ward rows
+    hs2 = _find_row_index(hc_rows, "SECTION 2:") or 47
+    hc_asset_hdr_row = hs2 + 1
+    hc_asset_end_row = hc_asset_hdr_row + 1 + _count_table_rows(hc_rows, hs2 + 2)
+
+    # Row 1 (Anchor Row 3): Full-Sample PCA Scree & Cumulative Variance
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 3,
+            "anchor_col": 0,
+            "width": 660,
+            "height": 380,
+            "title": "1. PCA Scree Plot — Eigenvalues vs Horn Parallel Analysis (95th) & Marchenko-Pastur",
+            "chart_type": "COMBO",
+            "x_title": "Principal Component (PC1–PC20)",
+            "y_left_title": "Eigenvalue",
+            "domain": {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 0, "ec": 1},
+            "series": [
+                {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 1, "ec": 2, "type": "COLUMN", "axis": "LEFT_AXIS", "color": "#1F4E78"},
+                {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 5, "ec": 6, "type": "LINE", "axis": "LEFT_AXIS", "color": "#E67C73", "line_width": 2},
+                {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 7, "ec": 8, "type": "LINE", "axis": "LEFT_AXIS", "color": "#F4B400", "line_width": 2},
+            ],
+        }
+    )
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 3,
+            "anchor_col": 10,
+            "width": 660,
+            "height": 380,
+            "title": "2. PCA Variance Explained (%) & Cumulative Variance Explained (%)",
+            "chart_type": "COMBO",
+            "x_title": "Principal Component (PC1–PC20)",
+            "y_left_title": "Individual Var Explained (%)",
+            "y_right_title": "Cumulative Var Explained (%)",
+            "domain": {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 0, "ec": 1},
+            "series": [
+                {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 2, "ec": 3, "type": "COLUMN", "axis": "LEFT_AXIS", "color": "#5B9BD5"},
+                {"tab": "PCA_Overview_and_Loadings", "sr": 1, "er": 22, "sc": 3, "ec": 4, "type": "LINE", "axis": "RIGHT_AXIS", "color": "#1F4E78", "line_width": 3},
+            ],
+        }
+    )
+
+    # Row 2 (Anchor Row 23): Strictly Causal Rolling PCA Time Series
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 23,
+            "anchor_col": 0,
+            "width": 660,
+            "height": 380,
+            "title": "3. Rolling PCA (252d Causal) — Systemic Absorption Ratios & PC1 Variance (2009–2026)",
+            "chart_type": "LINE",
+            "x_title": "Date",
+            "y_left_title": "Variance Explained (%)",
+            "domain": {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 22, "ec": 23},
+            "series": [
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 25, "ec": 26, "axis": "LEFT_AXIS", "color": "#D93025", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 24, "ec": 25, "axis": "LEFT_AXIS", "color": "#F4B400", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 23, "ec": 24, "axis": "LEFT_AXIS", "color": "#1F4E78", "line_width": 2},
+            ],
+        }
+    )
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 23,
+            "anchor_col": 10,
+            "width": 660,
+            "height": 380,
+            "title": "4. Rolling PCA Stock-Bond Correlation Regime Flip (S&P 500 vs TLT on PC1, 2009–2026)",
+            "chart_type": "LINE",
+            "x_title": "Date",
+            "y_left_title": "PC1 Correlation Loading / Product",
+            "domain": {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 22, "ec": 23},
+            "series": [
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 28, "ec": 29, "axis": "LEFT_AXIS", "color": "#1F4E78", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 29, "ec": 30, "axis": "LEFT_AXIS", "color": "#D93025", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 30, "ec": 31, "axis": "LEFT_AXIS", "color": "#F4B400", "line_width": 2},
+            ],
+        }
+    )
+
+    # Row 3 (Anchor Row 43): Systemic Fragility Z-Score & Cumulative PC Trends
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 43,
+            "anchor_col": 0,
+            "width": 660,
+            "height": 380,
+            "title": "5. Causal Systemic Fragility — 252d Absorption Ratio Z-Score vs Effective Rank",
+            "chart_type": "LINE",
+            "x_title": "Date",
+            "y_left_title": "AR5 Causal Z-Score (sigma)",
+            "y_right_title": "Effective Rank (Independent Bets)",
+            "domain": {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 22, "ec": 23},
+            "series": [
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 26, "ec": 27, "axis": "LEFT_AXIS", "color": "#D93025", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_wr, "sc": 27, "ec": 28, "axis": "RIGHT_AXIS", "color": "#1F4E78", "line_width": 2},
+            ],
+        }
+    )
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 43,
+            "anchor_col": 10,
+            "width": 660,
+            "height": 380,
+            "title": "6. Cumulative Standardized Macro PCA Factor Trends (PC1–PC3, 2008–2026)",
+            "chart_type": "LINE",
+            "x_title": "Date",
+            "y_left_title": "Cumulative Standardized Score",
+            "domain": {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 31, "ec": 32},
+            "series": [
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 32, "ec": 33, "axis": "LEFT_AXIS", "color": "#1F4E78", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 33, "ec": 34, "axis": "LEFT_AXIS", "color": "#D93025", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 34, "ec": 35, "axis": "LEFT_AXIS", "color": "#0F9D58", "line_width": 2},
+            ],
+        }
+    )
+
+    # Row 4 (Anchor Row 63): Factor Analysis Variance & Clustering Optimal-k Validation
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 63,
+            "anchor_col": 0,
+            "width": 660,
+            "height": 380,
+            "title": f"7. Factor Analysis (MLFA Varimax, m={fa_res['m']}) — Common Variance Explained by Latent Factor",
+            "chart_type": "COMBO",
+            "x_title": "Latent Macro Factor",
+            "y_left_title": "Factor Variance Explained (%)",
+            "y_right_title": "Cumulative Common Variance (%)",
+            "domain": {"tab": "Factor_Analysis_Results", "sr": fa_hdr_row, "er": fa_end_row, "sc": 1, "ec": 2},
+            "series": [
+                {"tab": "Factor_Analysis_Results", "sr": fa_hdr_row, "er": fa_end_row, "sc": 3, "ec": 4, "type": "COLUMN", "axis": "LEFT_AXIS", "color": "#1F4E78"},
+                {"tab": "Factor_Analysis_Results", "sr": fa_hdr_row, "er": fa_end_row, "sc": 4, "ec": 5, "type": "LINE", "axis": "RIGHT_AXIS", "color": "#D93025", "line_width": 3},
+            ],
+        }
+    )
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 63,
+            "anchor_col": 10,
+            "width": 660,
+            "height": 380,
+            "title": "8. Hierarchical Clustering — Ward Optimal-k Validation (Silhouette & Separation Gap, k=2..12)",
+            "chart_type": "LINE",
+            "x_title": "Number of Clusters (k)",
+            "y_left_title": "Score / Correlation Separation Gap",
+            "domain": {"tab": "Hierarchical_Clustering", "sr": ward_hdr_row, "er": ward_end_row, "sc": 2, "ec": 3},
+            "series": [
+                {"tab": "Hierarchical_Clustering", "sr": ward_hdr_row, "er": ward_end_row, "sc": 3, "ec": 4, "axis": "LEFT_AXIS", "color": "#1F4E78", "line_width": 3},
+                {"tab": "Hierarchical_Clustering", "sr": ward_hdr_row, "er": ward_end_row, "sc": 8, "ec": 9, "axis": "LEFT_AXIS", "color": "#0F9D58", "line_width": 3},
+            ],
+        }
+    )
+
+    # Row 5 (Anchor Row 83): Ward Dendrogram & HRP Portfolio Weights
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 83,
+            "anchor_col": 0,
+            "width": 660,
+            "height": 400,
+            "title": f"9. Ward Hierarchical Clustering Dendrogram (Optimal Leaf Order 1–35; Cut k={hc_res['opt_k_ward']} at d={dash_meta['cut_height']:.2f})",
+            "chart_type": "LINE",
+            "x_title": "Optimal Leaf Order Index (1–35 — see Leaf Reference Key at Row 105 below)",
+            "y_left_title": "Ward Merge Distance",
+            "interpolate_nulls": False,
+            "domain": {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_dn, "sc": 35, "ec": 36},
+            "series": [
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_dn, "sc": 36, "ec": 37, "axis": "LEFT_AXIS", "color": "#1F4E78", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_dn, "sc": 37, "ec": 38, "axis": "LEFT_AXIS", "color": "#94A3B8", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_dn, "sc": 38, "ec": 39, "axis": "LEFT_AXIS", "color": "#D93025", "line_width": 2, "dashed": True},
+            ],
+        }
+    )
+    charts.append(
+        {
+            "target_tab": "Visual_Dashboard",
+            "anchor_row": 83,
+            "anchor_col": 10,
+            "width": 660,
+            "height": 400,
+            "title": "10. Hierarchical Risk Parity (HRP) Portfolio Weights vs Equal Weight (All 35 Assets)",
+            "chart_type": "COLUMN",
+            "x_title": "Assets (Ordered by Ward Optimal Leaf Ordering)",
+            "y_left_title": "Portfolio Weight (%)",
+            "domain": {"tab": "Hierarchical_Clustering", "sr": hc_asset_hdr_row, "er": hc_asset_end_row, "sc": 1, "ec": 2},
+            "series": [
+                {"tab": "Hierarchical_Clustering", "sr": hc_asset_hdr_row, "er": hc_asset_end_row, "sc": 15, "ec": 16, "axis": "LEFT_AXIS", "color": "#1F4E78"},
+                {"tab": "Hierarchical_Clustering", "sr": hc_asset_hdr_row, "er": hc_asset_end_row, "sc": 16, "ec": 17, "axis": "LEFT_AXIS", "color": "#B0BEC5"},
+            ],
+        }
+    )
+
+    # Bonus contextual chart directly beside PCA_Scores_TimeSeries data (Cols M+)
+    charts.append(
+        {
+            "target_tab": "PCA_Scores_TimeSeries",
+            "anchor_row": 1,
+            "anchor_col": 12,
+            "width": 680,
+            "height": 400,
+            "title": "Cumulative Standardized Macro PCA Scores (PC1 Risk-On, PC2 US Rates, PC3 Asia/China)",
+            "chart_type": "LINE",
+            "x_title": "Date",
+            "y_left_title": "Cumulative Standardized Score",
+            "domain": {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 31, "ec": 32},
+            "series": [
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 32, "ec": 33, "axis": "LEFT_AXIS", "color": "#1F4E78", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 33, "ec": 34, "axis": "LEFT_AXIS", "color": "#D93025", "line_width": 2},
+                {"tab": "Visual_Dashboard", "sr": 1, "er": 2 + n_ws, "sc": 34, "ec": 35, "axis": "LEFT_AXIS", "color": "#0F9D58", "line_width": 2},
+            ],
+        }
+    )
+    return charts
+
+
+# =============================================================================
+# 10. CSV SAVING & MULTI-BACKEND GOOGLE SHEETS PUBLISHING
 # =============================================================================
 
 
@@ -2247,6 +2843,262 @@ def _make_format_request(
     }
 
 
+def _make_gradient_rule_request(sheet_id: int, spec: dict[str, Any]) -> dict[str, Any]:
+    """Build a Google Sheets v4 API addConditionalFormatRule (gradient color scale) request."""
+    grad: dict[str, Any] = {
+        "minpoint": {
+            "colorStyle": {"rgbColor": _hex_to_rgb(spec["min_hex"])},
+            "type": "NUMBER",
+            "value": str(spec["min_val"]),
+        },
+        "maxpoint": {
+            "colorStyle": {"rgbColor": _hex_to_rgb(spec["max_hex"])},
+            "type": "NUMBER",
+            "value": str(spec["max_val"]),
+        },
+    }
+    if spec.get("mid_val") is not None and spec.get("mid_hex"):
+        grad["midpoint"] = {
+            "colorStyle": {"rgbColor": _hex_to_rgb(spec["mid_hex"])},
+            "type": "NUMBER",
+            "value": str(spec["mid_val"]),
+        }
+    return {
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": [
+                    {
+                        "sheetId": sheet_id,
+                        "startRowIndex": spec["start_row"],
+                        "endRowIndex": spec["end_row"],
+                        "startColumnIndex": spec["start_col"],
+                        "endColumnIndex": spec["end_col"],
+                    }
+                ],
+                "gradientRule": grad,
+            },
+            "index": 0,
+        }
+    }
+
+
+def _make_chart_request(sheet_map: dict[str, dict[str, Any]], spec: dict[str, Any]) -> dict[str, Any]:
+    """Build a Google Sheets v4 API addChart request from a declarative chart spec."""
+    target_sid = sheet_map[spec["target_tab"]]["sheet_id"]
+    dom = spec["domain"]
+    dom_sid = sheet_map[dom["tab"]]["sheet_id"]
+
+    axes: list[dict[str, Any]] = [
+        {"position": "BOTTOM_AXIS", "title": spec.get("x_title", "")},
+        {"position": "LEFT_AXIS", "title": spec.get("y_left_title", "")},
+    ]
+    if spec.get("y_right_title"):
+        axes.append({"position": "RIGHT_AXIS", "title": spec["y_right_title"]})
+
+    series_reqs: list[dict[str, Any]] = []
+    for s in spec["series"]:
+        s_sid = sheet_map[s["tab"]]["sheet_id"]
+        s_obj: dict[str, Any] = {
+            "series": {
+                "sourceRange": {
+                    "sources": [
+                        {
+                            "sheetId": s_sid,
+                            "startRowIndex": s["sr"],
+                            "endRowIndex": s["er"],
+                            "startColumnIndex": s["sc"],
+                            "endColumnIndex": s["ec"],
+                        }
+                    ]
+                }
+            },
+            "targetAxis": s.get("axis", "LEFT_AXIS"),
+            "colorStyle": {"rgbColor": _hex_to_rgb(s.get("color", "#1F4E78"))},
+        }
+        if spec["chart_type"] == "COMBO" and s.get("type"):
+            s_obj["type"] = s["type"]
+        if spec["chart_type"] == "LINE" or s.get("type") == "LINE":
+            s_obj["lineStyle"] = {
+                "width": int(s.get("line_width", 2)),
+                "type": "MEDIUM_DASHED" if s.get("dashed") else "SOLID",
+            }
+        series_reqs.append(s_obj)
+
+    basic_chart: dict[str, Any] = {
+        "chartType": spec["chart_type"],
+        "legendPosition": "BOTTOM_LEGEND",
+        "headerCount": 1,
+        "axis": axes,
+        "domains": [
+            {
+                "domain": {
+                    "sourceRange": {
+                        "sources": [
+                            {
+                                "sheetId": dom_sid,
+                                "startRowIndex": dom["sr"],
+                                "endRowIndex": dom["er"],
+                                "startColumnIndex": dom["sc"],
+                                "endColumnIndex": dom["ec"],
+                            }
+                        ]
+                    }
+                }
+            }
+        ],
+        "series": series_reqs,
+    }
+    if "interpolate_nulls" in spec:
+        basic_chart["interpolateNulls"] = bool(spec["interpolate_nulls"])
+
+    return {
+        "addChart": {
+            "chart": {
+                "spec": {
+                    "title": spec["title"],
+                    "titleTextFormat": {"bold": True, "fontSize": 11},
+                    "basicChart": basic_chart,
+                },
+                "position": {
+                    "overlayPosition": {
+                        "anchorCell": {
+                            "sheetId": target_sid,
+                            "rowIndex": int(spec["anchor_row"]),
+                            "columnIndex": int(spec["anchor_col"]),
+                        },
+                        "offsetXPixels": 8,
+                        "offsetYPixels": 6,
+                        "widthPixels": int(spec.get("width", 660)),
+                        "heightPixels": int(spec.get("height", 380)),
+                    }
+                },
+            }
+        }
+    }
+
+
+def _collect_existing_visuals_from_meta(meta: dict[str, Any]) -> tuple[list[int], dict[int, int]]:
+    """Extract existing chart IDs and conditional format rule counts per sheetId from full spreadsheet JSON."""
+    chart_ids: list[int] = []
+    cf_counts: dict[int, int] = {}
+    for s in meta.get("sheets", []):
+        props = s.get("properties", {})
+        sid = int(props.get("sheetId", 0))
+        for ch in s.get("charts", []):
+            if "chartId" in ch:
+                chart_ids.append(int(ch["chartId"]))
+        cf_list = s.get("conditionalFormats", [])
+        if cf_list:
+            cf_counts[sid] = len(cf_list)
+    return chart_ids, cf_counts
+
+
+def _build_visual_batch_requests(
+    sheet_map: dict[str, dict[str, Any]],
+    tab_specs: list[tuple[str, Path, bool, bool]],
+    color_scales: list[dict[str, Any]],
+    chart_specs: list[dict[str, Any]],
+    existing_chart_ids: list[int],
+    existing_cf_counts: dict[int, int],
+) -> list[dict[str, Any]]:
+    """Build cleanup + tab-ordering + conditional color scales + embedded charts batch requests."""
+    reqs: list[dict[str, Any]] = []
+
+    # 1. Remove prior charts and conditional format rules so repeated runs never duplicate visuals
+    for cid in existing_chart_ids:
+        reqs.append({"deleteEmbeddedObject": {"objectId": cid}})
+    for sid, cnt in existing_cf_counts.items():
+        for _ in range(cnt):
+            reqs.append({"deleteConditionalFormatRule": {"sheetId": sid, "index": 0}})
+
+    # 2. Enforce clean tab ordering (Executive_Summary #1, Visual_Dashboard #2, ...)
+    for tab_idx, (tab_name, _, _, _) in enumerate(tab_specs):
+        if tab_name in sheet_map:
+            reqs.append(
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_map[tab_name]["sheet_id"],
+                            "index": tab_idx,
+                        },
+                        "fields": "index",
+                    }
+                }
+            )
+
+    # 3. Conditional formatting color scales (heatmaps)
+    for cs in color_scales:
+        if cs["tab"] in sheet_map:
+            reqs.append(_make_gradient_rule_request(sheet_map[cs["tab"]]["sheet_id"], cs))
+
+    # 4. Clean column widths so labels don't truncate and 35x35 correlation heatmap reads like a compact matrix
+    wide_col0_tabs = [
+        ("Executive_Summary", 270),
+        ("PCA_Overview_and_Loadings", 185),
+        ("Rolling_PCA_Loadings_Snapshots", 185),
+        ("Factor_Analysis_Results", 210),
+        ("Hierarchical_Clustering", 185),
+        ("Correlation_and_Distance_Matrix", 175),
+    ]
+    for tname, px in wide_col0_tabs:
+        if tname in sheet_map:
+            reqs.append(
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_map[tname]["sheet_id"],
+                            "dimension": "COLUMNS",
+                            "startIndex": 0,
+                            "endIndex": 1,
+                        },
+                        "properties": {"pixelSize": px},
+                        "fields": "pixelSize",
+                    }
+                }
+            )
+    if "Correlation_and_Distance_Matrix" in sheet_map:
+        corr_sid = sheet_map["Correlation_and_Distance_Matrix"]["sheet_id"]
+        # Compact 58px square-ish cells for the 35x35 correlation & distance heatmaps
+        reqs.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": corr_sid,
+                        "dimension": "COLUMNS",
+                        "startIndex": 2,
+                        "endIndex": 37,
+                    },
+                    "properties": {"pixelSize": 58},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+        # Wrap header text on the two 35x35 subheader rows so column labels remain legible
+        for hdr_r in (1, 39):
+            reqs.append(
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": corr_sid,
+                            "startRowIndex": hdr_r,
+                            "endRowIndex": hdr_r + 1,
+                            "startColumnIndex": 2,
+                            "endColumnIndex": 37,
+                        },
+                        "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+                        "fields": "userEnteredFormat.wrapStrategy",
+                    }
+                }
+            )
+
+    # 5. Native embedded Google Sheets charts
+    for ch in chart_specs:
+        if ch["target_tab"] in sheet_map and ch["domain"]["tab"] in sheet_map:
+            reqs.append(_make_chart_request(sheet_map, ch))
+
+    return reqs
+
+
 def get_sheet_map_cli(dest_id: str) -> dict[str, dict[str, Any]]:
     res = run_cmd(["gsheets", "readonly", "list-sheets", dest_id, "--json"])
     data = json.loads(res.stdout)
@@ -2295,8 +3147,13 @@ def ensure_grid_size_cli(
         os.unlink(tf_path)
 
 
-def publish_to_sheets_webapp(dest_id: str, tab_specs: list[tuple[str, Path, bool, bool]]) -> None:
-    """Publish all tabs via Google Apps Script Web App bridge."""
+def publish_to_sheets_webapp(
+    dest_id: str,
+    tab_specs: list[tuple[str, Path, bool, bool]],
+    color_scales: list[dict[str, Any]],
+    chart_specs: list[dict[str, Any]],
+) -> None:
+    """Publish all tabs, color scales, and charts via Google Apps Script Web App bridge."""
     for tab_idx, (tab_name, csv_path, freeze_col_a, is_multi_section) in enumerate(tab_specs):
         with csv_path.open("r", encoding="utf-8", newline="") as f:
             all_rows = list(csv.reader(f))
@@ -2354,15 +3211,50 @@ def publish_to_sheets_webapp(dest_id: str, tab_specs: list[tuple[str, Path, bool
             }
         )
 
+    # Apply color scales and rebuild charts (gracefully skipped if user hasn't redeployed Code.gs yet)
+    try:
+        print(f"  Applying {len(color_scales)} conditional color scales via Apps Script...")
+        call_apps_script(
+            {
+                "action": "apply_color_scales",
+                "dest_id": dest_id,
+                "rules": color_scales,
+            }
+        )
+        print(f"  Building {len(chart_specs)} native charts via Apps Script...")
+        call_apps_script(
+            {
+                "action": "rebuild_charts",
+                "dest_id": dest_id,
+                "charts": chart_specs,
+            }
+        )
+    except RuntimeError as exc:
+        if "Unknown action" in str(exc):
+            print(
+                "  [INFO] Deployed Apps Script bridge does not yet have apply_color_scales/rebuild_charts; "
+                "redeploy apps_script/Code.gs to auto-refresh color scales & charts on GitHub Actions runs."
+            )
+        else:
+            raise
 
-def publish_to_sheets_api(dest_id: str, tab_specs: list[tuple[str, Path, bool, bool]]) -> None:
-    """Publish all tabs directly via Google Sheets v4 API."""
+
+def publish_to_sheets_api(
+    dest_id: str,
+    tab_specs: list[tuple[str, Path, bool, bool]],
+    color_scales: list[dict[str, Any]],
+    chart_specs: list[dict[str, Any]],
+) -> None:
+    """Publish all tabs, color scales, and charts directly via Google Sheets v4 API."""
     service = build_sheets_service()
 
-    def get_map() -> dict[str, dict[str, Any]]:
+    def get_full_meta() -> tuple[dict[str, dict[str, Any]], list[int], dict[int, int]]:
         meta = (
             service.spreadsheets()
-            .get(spreadsheetId=dest_id, fields="sheets.properties(sheetId,title,gridProperties)")
+            .get(
+                spreadsheetId=dest_id,
+                fields="sheets(properties(sheetId,title,gridProperties),charts.chartId,conditionalFormats)",
+            )
             .execute()
         )
         out: dict[str, dict[str, Any]] = {}
@@ -2374,9 +3266,10 @@ def publish_to_sheets_api(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
                 "rows": int(grid.get("rowCount", 1000)),
                 "cols": int(grid.get("columnCount", 26)),
             }
-        return out
+        c_ids, cf_cnts = _collect_existing_visuals_from_meta(meta)
+        return out, c_ids, cf_cnts
 
-    sheet_map = get_map()
+    sheet_map, _, _ = get_full_meta()
     setup_reqs: list[dict[str, Any]] = []
     first_tab = tab_specs[0][0]
     if first_tab not in sheet_map and "Sheet1" in sheet_map:
@@ -2397,7 +3290,7 @@ def publish_to_sheets_api(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
 
     if setup_reqs:
         service.spreadsheets().batchUpdate(spreadsheetId=dest_id, body={"requests": setup_reqs}).execute()
-        sheet_map = get_map()
+    sheet_map, existing_charts, existing_cfs = get_full_meta()
 
     format_reqs: list[dict[str, Any]] = []
     for tab_name, csv_path, freeze_col_a, is_multi_section in tab_specs:
@@ -2465,12 +3358,22 @@ def publish_to_sheets_api(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
             for r_i in sub0:
                 format_reqs.append(_make_format_request(sid, r_i, r_i + 1, 0, n_cols, "#D9E1F2", "#000000", bold=True))
 
-    if format_reqs:
-        service.spreadsheets().batchUpdate(spreadsheetId=dest_id, body={"requests": format_reqs}).execute()
+    visual_reqs = _build_visual_batch_requests(
+        sheet_map, tab_specs, color_scales, chart_specs, existing_charts, existing_cfs
+    )
+    all_reqs = format_reqs + visual_reqs
+    if all_reqs:
+        print(f"  Applying formatting, {len(color_scales)} color scales & {len(chart_specs)} charts via Sheets API...")
+        service.spreadsheets().batchUpdate(spreadsheetId=dest_id, body={"requests": all_reqs}).execute()
 
 
-def publish_to_sheets_cli(dest_id: str, tab_specs: list[tuple[str, Path, bool, bool]]) -> None:
-    """Publish all tabs locally via Antigravity `gsheets` CLI."""
+def publish_to_sheets_cli(
+    dest_id: str,
+    tab_specs: list[tuple[str, Path, bool, bool]],
+    color_scales: list[dict[str, Any]],
+    chart_specs: list[dict[str, Any]],
+) -> None:
+    """Publish all tabs, conditional color scales, and embedded charts locally via `gsheets` CLI."""
     sheet_map = get_sheet_map_cli(dest_id)
     first_tab = tab_specs[0][0]
     if first_tab not in sheet_map and "Sheet1" in sheet_map:
@@ -2485,6 +3388,11 @@ def publish_to_sheets_cli(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
             run_cmd(["gsheets", "mutate", "add-sheet", dest_id, "--title", tab_name])
 
     sheet_map = get_sheet_map_cli(dest_id)
+    # Inspect existing charts & conditional format rules so re-runs replace them cleanly
+    info_res = run_cmd(["gsheets", "readonly", "info", dest_id, "--json"])
+    full_meta = json.loads(info_res.stdout)
+    existing_charts, existing_cfs = _collect_existing_visuals_from_meta(full_meta)
+
     format_reqs: list[dict[str, Any]] = []
 
     for tab_name, csv_path, freeze_col_a, is_multi_section in tab_specs:
@@ -2514,7 +3422,7 @@ def publish_to_sheets_cli(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
             if n_rows > chunk_size:
                 print(f"    wrote rows {start + 1}..{end} / {n_rows}")
 
-        # Collect batch formatting requests (single raw-batch call per spreadsheet = super fast!)
+        # Header & section formatting
         format_reqs.append(_make_format_request(sid, 0, 1, 0, n_cols, "#1F4E78", "#FFFFFF", bold=True))
         format_reqs.append(
             {
@@ -2537,10 +3445,17 @@ def publish_to_sheets_cli(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
             for r_i in sub0:
                 format_reqs.append(_make_format_request(sid, r_i, r_i + 1, 0, n_cols, "#D9E1F2", "#000000", bold=True))
 
-    if format_reqs:
-        print(f"  Applying visual formatting & freeze panes across {len(tab_specs)} tabs...")
+    visual_reqs = _build_visual_batch_requests(
+        sheet_map, tab_specs, color_scales, chart_specs, existing_charts, existing_cfs
+    )
+    all_reqs = format_reqs + visual_reqs
+    if all_reqs:
+        print(
+            f"  Applying formatting, {len(color_scales)} heatmap color scales & "
+            f"{len(chart_specs)} native charts across {len(tab_specs)} tabs..."
+        )
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
-            json.dump({"requests": format_reqs}, tf)
+            json.dump({"requests": all_reqs}, tf)
             tf_path = tf.name
         try:
             run_cmd(["gsheets", "mutate", "raw-batch", dest_id, "-f", tf_path])
@@ -2551,18 +3466,20 @@ def publish_to_sheets_cli(dest_id: str, tab_specs: list[tuple[str, Path, bool, b
 def publish_to_sheets(
     dest_id: str,
     tab_specs: list[tuple[str, Path, bool, bool]],
+    color_scales: list[dict[str, Any]],
+    chart_specs: list[dict[str, Any]],
     backend: str = "auto",
 ) -> None:
     if not dest_id:
         raise ValueError("Destination Google Sheet ID is empty. Pass --dest-id or set EXPLORATION_SHEET_ID.")
     chosen = resolve_sheets_backend(backend)
-    print(f"[7/7] Publishing {len(tab_specs)} tabs to destination Google Sheet ({chosen}): {dest_id}")
+    print(f"[7/7] Publishing {len(tab_specs)} tabs + visuals to destination Google Sheet ({chosen}): {dest_id}")
     if chosen == "webapp":
-        publish_to_sheets_webapp(dest_id, tab_specs)
+        publish_to_sheets_webapp(dest_id, tab_specs, color_scales, chart_specs)
     elif chosen == "api":
-        publish_to_sheets_api(dest_id, tab_specs)
+        publish_to_sheets_api(dest_id, tab_specs, color_scales, chart_specs)
     else:
-        publish_to_sheets_cli(dest_id, tab_specs)
+        publish_to_sheets_cli(dest_id, tab_specs, color_scales, chart_specs)
 
 
 # =============================================================================
@@ -2682,8 +3599,9 @@ def main() -> None:
     # 5. Cross-Universe Sensitivities
     sens_rows = run_universe_sensitivities(ml_df, daily_35_cols)
 
-    # Build & save all 9 CSV artifacts
+    # Build & save all 10 CSV artifacts (incl. Visual_Dashboard)
     p_exec = out_dir / "Executive_Summary.csv"
+    p_dash = out_dir / "Visual_Dashboard.csv"
     p_pca_ov = out_dir / "PCA_Overview_and_Loadings.csv"
     p_pca_sc = out_dir / "PCA_Scores_TimeSeries.csv"
     p_roll_dyn = out_dir / "Rolling_PCA_Dynamics.csv"
@@ -2696,6 +3614,7 @@ def main() -> None:
     exec_rows = build_executive_summary(
         args.source_id, args.dest_id, dates, daily_35_cols, pca_res, roll_res, fa_res, hc_res, sens_rows
     )
+    dash_rows, dash_meta = build_visual_dashboard_sheet(daily_35_cols, pca_res, roll_res, fa_res, hc_res)
     pca_ov_rows = build_pca_overview_sheet(daily_35_cols, pca_res)
     roll_snap_rows = build_rolling_snapshots_sheet(daily_35_cols, roll_res)
     fa_rows = build_factor_analysis_sheet(daily_35_cols, fa_res)
@@ -2703,6 +3622,7 @@ def main() -> None:
     corr_rows = build_corr_dist_sheet(daily_35_cols, pca_res["corr"], hc_res)
 
     save_rows_csv(exec_rows, p_exec)
+    save_rows_csv(dash_rows, p_dash)
     save_rows_csv(pca_ov_rows, p_pca_ov)
     save_clean_csv(pca_res["scores_df"], p_pca_sc, decimals=5)
     save_clean_csv(dyn_df, p_roll_dyn, decimals=4)
@@ -2715,6 +3635,7 @@ def main() -> None:
     # (tab_name, csv_path, freeze_col_a, is_multi_section)
     tab_specs: list[tuple[str, Path, bool, bool]] = [
         ("Executive_Summary", p_exec, False, True),
+        ("Visual_Dashboard", p_dash, False, True),
         ("PCA_Overview_and_Loadings", p_pca_ov, True, True),
         ("PCA_Scores_TimeSeries", p_pca_sc, True, False),
         ("Rolling_PCA_Dynamics", p_roll_dyn, True, False),
@@ -2727,18 +3648,25 @@ def main() -> None:
 
     print("\n=== AGENT 3 OUTPUT SUMMARY ===")
     total_cells = 0
+    tab_rows_map: dict[str, list[list[str]]] = {}
     for tname, path, _, _ in tab_specs:
         with path.open("r", encoding="utf-8", newline="") as f:
             r_all = list(csv.reader(f))
+        tab_rows_map[tname] = r_all
         nr = len(r_all)
         nc = max((len(r) for r in r_all), default=0)
         total_cells += nr * nc
         print(f"  {tname:34s}: {nr:5d} rows x {nc:2d} cols ({nr * nc:7,d} cells)")
-    print(f"  Total Cells Across 9 Tabs         : {total_cells:,} (limit: 10,000,000)")
+    print(f"  Total Cells Across {len(tab_specs)} Tabs        : {total_cells:,} (limit: 10,000,000)")
+
+    color_scales = build_color_scale_specs(tab_rows_map, fa_res, hc_res)
+    chart_specs = build_chart_specs(tab_rows_map, dash_meta, fa_res, hc_res)
+    print(f"  Planned Heatmap Color Scales      : {len(color_scales)} gradient rules across 6 tabs")
+    print(f"  Planned Native Charts             : {len(chart_specs)} charts on Visual_Dashboard")
 
     if not args.skip_upload:
-        publish_to_sheets(args.dest_id, tab_specs, backend=args.backend)
-        print("\n[DONE] Agent 3 Data Exploration complete and published to Google Sheets!")
+        publish_to_sheets(args.dest_id, tab_specs, color_scales, chart_specs, backend=args.backend)
+        print("\n[DONE] Agent 3 Data Exploration + Color Scales + Charts published to Google Sheets!")
     else:
         print("\n[DONE] Agent 3 local exploration complete (--skip-upload specified).")
 

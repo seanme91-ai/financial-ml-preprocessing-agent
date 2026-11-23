@@ -54,6 +54,12 @@ function doPost(e) {
     if (action === "format_tab") {
       return handleFormatTab(req);
     }
+    if (action === "apply_color_scales") {
+      return handleApplyColorScales(req);
+    }
+    if (action === "rebuild_charts") {
+      return handleRebuildCharts(req);
+    }
     return jsonResponse({ ok: false, error: "Unknown action: " + action });
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err && err.stack ? err.stack : err) });
@@ -210,4 +216,112 @@ function handleFormatTab(req) {
 
   SpreadsheetApp.flush();
   return jsonResponse({ ok: true });
+}
+
+function handleApplyColorScales(req) {
+  const ss = SpreadsheetApp.openById(req.dest_id);
+  const rules = req.rules || [];
+  const byTab = {};
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    if (!byTab[r.tab]) byTab[r.tab] = [];
+    byTab[r.tab].push(r);
+  }
+  const tabs = Object.keys(byTab);
+  for (let t = 0; t < tabs.length; t++) {
+    const sheet = ss.getSheetByName(tabs[t]);
+    if (!sheet) continue;
+    const cfRules = [];
+    const list = byTab[tabs[t]];
+    for (let i = 0; i < list.length; i++) {
+      const sp = list[i];
+      const rng = sheet.getRange(
+        sp.start_row + 1,
+        sp.start_col + 1,
+        sp.end_row - sp.start_row,
+        sp.end_col - sp.start_col
+      );
+      let b = SpreadsheetApp.newConditionalFormatRule()
+        .setGradientMinpointWithValue(sp.min_hex, SpreadsheetApp.InterpolationType.NUMBER, String(sp.min_val))
+        .setGradientMaxpointWithValue(sp.max_hex, SpreadsheetApp.InterpolationType.NUMBER, String(sp.max_val))
+        .setRanges([rng]);
+      if (sp.mid_val !== null && sp.mid_val !== undefined && sp.mid_hex) {
+        b = b.setGradientMidpointWithValue(sp.mid_hex, SpreadsheetApp.InterpolationType.NUMBER, String(sp.mid_val));
+      }
+      cfRules.push(b.build());
+    }
+    sheet.setConditionalFormatRules(cfRules);
+  }
+  SpreadsheetApp.flush();
+  return jsonResponse({ ok: true, rules_applied: rules.length });
+}
+
+function handleRebuildCharts(req) {
+  const ss = SpreadsheetApp.openById(req.dest_id);
+  const specs = req.charts || [];
+  const cleared = {};
+  for (let i = 0; i < specs.length; i++) {
+    const sp = specs[i];
+    const target = ss.getSheetByName(sp.target_tab);
+    if (!target) continue;
+    if (!cleared[sp.target_tab]) {
+      const existing = target.getCharts();
+      for (let c = 0; c < existing.length; c++) {
+        target.removeChart(existing[c]);
+      }
+      cleared[sp.target_tab] = true;
+    }
+    const domSheet = ss.getSheetByName(sp.domain.tab);
+    if (!domSheet) continue;
+    const typeMap = {
+      LINE: Charts.ChartType.LINE,
+      COLUMN: Charts.ChartType.COLUMN,
+      BAR: Charts.ChartType.BAR,
+      COMBO: Charts.ChartType.COMBO,
+      AREA: Charts.ChartType.AREA
+    };
+    const chartType = typeMap[sp.chart_type] || Charts.ChartType.LINE;
+    let builder = target.newChart()
+      .setChartType(chartType)
+      .setPosition(sp.anchor_row + 1, sp.anchor_col + 1, 8, 6)
+      .setOption("title", sp.title)
+      .setOption("width", sp.width || 660)
+      .setOption("height", sp.height || 380)
+      .setOption("legend", { position: "bottom" })
+      .setNumHeaders(1);
+
+    if (sp.x_title) builder = builder.setOption("hAxis.title", sp.x_title);
+    if (sp.y_left_title) builder = builder.setOption("vAxes.0.title", sp.y_left_title);
+    if (sp.y_right_title) builder = builder.setOption("vAxes.1.title", sp.y_right_title);
+    if (sp.interpolate_nulls === false) builder = builder.setOption("interpolateNulls", false);
+
+    builder = builder.addRange(
+      domSheet.getRange(
+        sp.domain.sr + 1,
+        sp.domain.sc + 1,
+        sp.domain.er - sp.domain.sr,
+        sp.domain.ec - sp.domain.sc
+      )
+    );
+    const seriesOpts = {};
+    for (let s = 0; s < (sp.series || []).length; s++) {
+      const ser = sp.series[s];
+      const sSheet = ss.getSheetByName(ser.tab);
+      if (!sSheet) continue;
+      builder = builder.addRange(
+        sSheet.getRange(ser.sr + 1, ser.sc + 1, ser.er - ser.sr, ser.ec - ser.sc)
+      );
+      const opt = { color: ser.color || "#1F4E78", targetAxisIndex: ser.axis === "RIGHT_AXIS" ? 1 : 0 };
+      if (sp.chart_type === "COMBO" && ser.type) {
+        opt.type = ser.type === "COLUMN" ? "bars" : "line";
+      }
+      if (ser.line_width) opt.lineWidth = ser.line_width;
+      if (ser.dashed) opt.lineDashStyle = [6, 4];
+      seriesOpts[s] = opt;
+    }
+    builder = builder.setOption("series", seriesOpts);
+    target.insertChart(builder.build());
+  }
+  SpreadsheetApp.flush();
+  return jsonResponse({ ok: true, charts_created: specs.length });
 }

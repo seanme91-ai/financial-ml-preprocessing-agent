@@ -32,6 +32,7 @@ financial-ml-preprocessing-agent/
     │   └── Feature_Dictionary.csv
     └── exploration/                      # Agent 3 outputs (gitignored; uploaded as Actions artifacts)
         ├── Executive_Summary.csv
+        ├── Visual_Dashboard.csv
         ├── PCA_Overview_and_Loadings.csv
         ├── PCA_Scores_TimeSeries.csv
         ├── Rolling_PCA_Dynamics.csv
@@ -95,7 +96,7 @@ This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflow
 - **Without secrets configured**: The workflow runs Agents 2 & 3 in offline verification mode (`--skip-fetch --skip-upload`) using `data/raw/financial_data_raw.csv` and uploads both `processed-ml-datasets` and `data-exploration-outputs` as downloadable workflow artifacts.
 - **With Google Sheets sync enabled (Option A — Google Apps Script, no Google Cloud needed):**
   1. Open your destination Google Sheet and click **Extensions → Apps Script**.
-  2. Paste [`apps_script/Code.gs`](apps_script/Code.gs), replace `API_TOKEN` with a strong secret token, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*).
+  2. Paste [`apps_script/Code.gs`](apps_script/Code.gs), replace `API_TOKEN` with a strong secret token, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*). *(Includes `apply_color_scales` and `rebuild_charts` so daily runs automatically refresh all 27 heatmaps and 11 charts.)*
   3. Add `APPS_SCRIPT_URL` (the `/exec` URL), `APPS_SCRIPT_TOKEN`, `SOURCE_SHEET_ID`, `DEST_SHEET_ID`, and `EXPLORATION_SHEET_ID` as GitHub repository secrets under **Settings → Secrets and variables → Actions**.
 - **With Google Sheets sync enabled (Option B — Google Cloud Service Account):**
   1. In Google Cloud Console, enable the **Google Sheets API**, create a **Service Account**, and download its JSON key.
@@ -122,14 +123,15 @@ This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflow
 Analyzes the clean 35 daily-traded multi-asset stationary panel (`is_core_ml_ready == 1`, `4,825` trading days from `2008-03-27` to `2026-11-20`; excluding stepped central bank policy rates to avoid zero-variance rolling windows, with full 5-universe sensitivities reported in `Executive_Summary`):
 
 1. **`Executive_Summary`**: Run metadata, executive findings across all 4 methods, 5-universe sensitivity comparison (raw vs ±5σ winsorized vs 42-asset incl. policy rates vs post-2019 36-asset incl. BNDX vs full 138-feature ML matrix), and tab directory.
-2. **`PCA_Overview_and_Loadings`**: Complete 35-component scree table (Eigenvalues, % variance, Kaiser > 1, Horn's Parallel Analysis 95th percentile, Marchenko-Pastur RMT upper bound, Effective Participation Ratio, economic labels), Correlation Loadings (`PC1`–`PC12` + reconstruction $R^2$), Orthonormal Eigenvector Weights (`PC1`–`PC10`), and Asset % Contributions.
-3. **`PCA_Scores_TimeSeries`**: Daily standardized `PC1`–`PC10` factor score time series (`4,825` rows, sign-oriented with `PC1+` = Global Risk-On).
-4. **`Rolling_PCA_Dynamics`**: Strictly causal trailing 252-day (1Y) & 63-day (1Q) Rolling PCA (`4,574` rows, zero lookahead) — `PC1`–`PC5` variance %, Absorption Ratios (`AR1`/`AR3`/`AR5`), causal 252d AR5 Z-score, Effective Rank (Shannon entropy), rolling Kaiser & Marchenko-Pastur counts, 21-day PC1 subspace drift, sign-aligned bellwether loadings, Stock-Bond PC1 co-movement product, and `Systemic_Regime` classification.
-5. **`Rolling_PCA_Loadings_Snapshots`**: Annual regime averages (`2009`–`2026`), year-end & latest PC1 loadings across all 35 assets with historical stability stats, and Top 12 non-overlapping historical systemic fragility peaks.
-6. **`Factor_Analysis_Results`**: Overall & per-asset KMO, Bartlett's Test of Sphericity, Jöreskog Maximum Likelihood Factor Analysis fit indices (RMSR, RMSEA, TLI, CFI), Varimax (orthogonal) rotated loadings with communalities/uniqueness/Hofmann complexity, Promax ($\kappa = 4$ oblique) pattern matrix, and Inter-Factor Correlation Matrix ($\Phi$).
-7. **`Factor_Scores_TimeSeries`**: Daily standardized Thomson Regression Factor Scores from the Varimax MLFA model (`4,825` rows × `8` latent factors).
-8. **`Hierarchical_Clustering`**: López de Prado metric correlation-distance ($d_{ij} = \sqrt{\frac{1}{2}(1-\rho_{ij})}$) benchmark across 4 linkage methods (`Ward`, `Average`, `Complete`, `Single`) and `k = 2..12` (Cophenetic correlation, Silhouette, Calinski-Harabasz, Davies-Bouldin, intra/inter-cluster correlations), Optimal Leaf-Ordered cluster assignments, **Hierarchical Risk Parity (HRP)** diversification weights, cluster cohesion profiles, and complete 34-step dendrogram merge history.
-9. **`Correlation_and_Distance_Matrix`**: Full `35 × 35` Pearson correlation matrix and correlation distance matrix ordered by Ward Optimal Leaf Ordering (quasi-diagonalized).
+2. **`Visual_Dashboard`**: Executive visual gallery with **10 native embedded Google Sheets charts** (PCA Scree Plot with Horn PA & Marchenko-Pastur bounds, PCA Variance Explained & Cumulative Curve, Rolling 252d Absorption Ratios time series, Rolling Stock-Bond Regime Flip time series, Causal AR5 Z-Score vs Effective Rank, Cumulative Standardized PC1–PC3 trends, MLFA Factor Variance Explained, Ward Optimal-k Validation Silhouette & Separation Gap, **Ward Hierarchical Clustering Dendrogram** with optimal cut threshold + Leaf Index Key 1–35, and Hierarchical Risk Parity weights vs Equal Weight).
+3. **`PCA_Overview_and_Loadings`**: Complete 35-component scree table (Eigenvalues, % variance, Kaiser > 1, Horn's Parallel Analysis 95th percentile, Marchenko-Pastur RMT upper bound, Effective Participation Ratio, economic labels), color-scale heatmap Correlation Loadings (`PC1`–`PC12` + reconstruction $R^2$), Orthonormal Eigenvector Weights (`PC1`–`PC10`), and Asset % Contributions.
+4. **`PCA_Scores_TimeSeries`**: Daily standardized `PC1`–`PC10` factor score time series (`4,825` rows, sign-oriented with `PC1+` = Global Risk-On).
+5. **`Rolling_PCA_Dynamics`**: Strictly causal trailing 252-day (1Y) & 63-day (1Q) Rolling PCA (`4,574` rows, zero lookahead) with color-scale heatmaps on `Absorption_Ratio_Top5`, `AR5_Causal_Z252`, and `Stock_Bond_PC1_Product`.
+6. **`Rolling_PCA_Loadings_Snapshots`**: Annual regime averages (`2009`–`2026`), color-scale heatmap of year-end & latest PC1 loadings across all 35 assets, and Top 12 non-overlapping historical systemic fragility peaks.
+7. **`Factor_Analysis_Results`**: Overall & per-asset KMO, Bartlett's Test of Sphericity, Jöreskog Maximum Likelihood Factor Analysis fit indices (RMSR, RMSEA, TLI, CFI), color-scale heatmaps on Varimax rotated loadings, Promax ($\kappa = 4$ oblique) pattern matrix, and Inter-Factor Correlation Matrix ($\Phi$).
+8. **`Factor_Scores_TimeSeries`**: Daily standardized Thomson Regression Factor Scores from the Varimax MLFA model (`4,825` rows × `8` latent factors).
+9. **`Hierarchical_Clustering`**: López de Prado metric correlation-distance ($d_{ij} = \sqrt{\frac{1}{2}(1-\rho_{ij})}$) benchmark across 4 linkage methods (`Ward`, `Average`, `Complete`, `Single`) and `k = 2..12`, color-scaled Optimal Leaf-Ordered cluster assignments, **Hierarchical Risk Parity (HRP)** diversification weights, cluster cohesion profiles, and complete 34-step dendrogram merge history.
+10. **`Correlation_and_Distance_Matrix`**: Full `35 × 35` Pearson correlation matrix (Blue–White–Red heatmap) and correlation distance matrix (Green–Yellow–Red heatmap) ordered by Ward Optimal Leaf Ordering (quasi-diagonalized).
 
 ## ML Usage Guidelines (Zero Lookahead)
 
