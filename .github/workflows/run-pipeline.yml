@@ -1,4 +1,4 @@
-name: Daily Financial Data Update & ML Preprocessing Pipeline
+name: Daily Financial Data Update, ML Preprocessing & Exploration Pipeline
 
 on:
   schedule:
@@ -10,7 +10,12 @@ on:
   workflow_dispatch:
     inputs:
       skip_daily_fetch:
-        description: "Skip Agent 1 daily market fetch (run ML preprocessing only)"
+        description: "Skip Agent 1 daily market fetch (run Agent 2 & Agent 3 only)"
+        required: false
+        default: false
+        type: boolean
+      skip_exploration:
+        description: "Skip Agent 3 data exploration (PCA, Rolling PCA, FA, Clustering)"
         required: false
         default: false
         type: boolean
@@ -68,9 +73,37 @@ jobs:
             python pipeline.py --skip-fetch --skip-upload
           fi
 
-      - name: Upload processed CSV outputs
+      - name: "Agent 3: Run PCA, Rolling PCA, Factor Analysis & Hierarchical Clustering (9 tabs)"
+        if: ${{ inputs.skip_exploration != true }}
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          DEST_SHEET_ID: ${{ secrets.DEST_SHEET_ID }}
+          EXPLORATION_SHEET_ID: ${{ secrets.EXPLORATION_SHEET_ID }}
+        run: |
+          if [ -n "$APPS_SCRIPT_URL" ] && [ -n "$APPS_SCRIPT_TOKEN" ] && [ -n "$EXPLORATION_SHEET_ID" ]; then
+            echo "Running Agent 3 (data_exploration.py) from freshly processed Agent 2 dataset via Apps Script..."
+            python data_exploration.py --skip-fetch --backend webapp
+          elif [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ] && [ -n "$EXPLORATION_SHEET_ID" ]; then
+            echo "Running Agent 3 (data_exploration.py) via Google Sheets API..."
+            python data_exploration.py --skip-fetch --backend api
+          else
+            echo "::notice::EXPLORATION_SHEET_ID or Google Sheets cloud credentials not set. Running Agent 3 offline verification."
+            python data_exploration.py --skip-fetch --skip-upload
+          fi
+
+      - name: Upload processed CSV outputs (Agent 2)
         uses: actions/upload-artifact@v4
         with:
           name: processed-ml-datasets
           path: data/processed/*.csv
+          retention-days: 14
+
+      - name: Upload data exploration CSV outputs (Agent 3)
+        if: ${{ inputs.skip_exploration != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-exploration-outputs
+          path: data/exploration/*.csv
           retention-days: 14

@@ -1,6 +1,9 @@
-# Financial ML Preprocessing & Cross-Asset Ratio Pipeline
+# Financial ML Preprocessing, Cross-Asset Ratio & Data Exploration Pipeline (Agents 1–3)
 
-A reproducible, strictly causal (zero lookahead bias) Python pipeline that fetches multi-asset financial time-series data from Google Sheets, audits data validity, fixes verified data corruptions while preserving genuine historical market events, engineers 48 cross-asset ratios/spreads/FX crosses, generates a 148-column ML-ready feature matrix, and publishes all formatted outputs to a destination Google Sheet.
+A reproducible, strictly causal (zero lookahead bias) three-agent Python pipeline that:
+1. **Agent 1 (`fetch_daily_data.py`)**: Fetches strict settled Mon–Fri closes across 44 global multi-asset series and appends daily updates to the source Google Sheet.
+2. **Agent 2 (`pipeline.py`)**: Audits data validity, fixes verified data corruptions while preserving genuine historical market events, engineers 48 cross-asset ratios/spreads/FX crosses, generates a 148-column ML-ready feature matrix, and publishes 5 formatted tabs to the `Preprocessed Data` Google Sheet.
+3. **Agent 3 (`data_exploration.py`)**: Consumes Agent 2's `ML_Ready_Dataset`, runs **Full-Sample PCA**, **Strictly Causal Rolling PCA (252d & 63d)**, **Maximum Likelihood Factor Analysis (Varimax + Promax)**, and **Hierarchical Agglomerative Clustering (+ Hierarchical Risk Parity)**, and publishes 9 formatted analytical tabs to the `Data Exploration - PCA, FA, Clustering` Google Sheet.
 
 ## Directory Structure
 
@@ -8,11 +11,12 @@ A reproducible, strictly causal (zero lookahead bias) Python pipeline that fetch
 financial-ml-preprocessing-agent/
 ├── .github/
 │   └── workflows/
-│       └── run-pipeline.yml              # Tue-Sat 09:00 SGT (Mon-Fri settled closes) & push runner
+│       └── run-pipeline.yml              # Tue-Sat 09:00 SGT (Mon-Fri settled closes) & push runner (Agents 1-3)
 ├── apps_script/
 │   └── Code.gs                           # Google Apps Script Web App bridge (read/append/publish)
 ├── fetch_daily_data.py                   # Agent 1: Daily 44-asset market data fetcher & sheet appender
 ├── pipeline.py                           # Agent 2: End-to-end causal ML preprocessing & ratio pipeline
+├── data_exploration.py                   # Agent 3: PCA, Rolling PCA, Factor Analysis & Hierarchical Clustering
 ├── GEMINI.md                             # Antigravity workspace rule for auto-pushing edits
 ├── requirements.txt                      # Python dependencies
 ├── .env.example                          # Environment variable template
@@ -20,12 +24,22 @@ financial-ml-preprocessing-agent/
 └── data/
     ├── raw/
     │   └── financial_data_raw.csv        # Raw baseline dataset
-    └── processed/                        # Generated locally / uploaded as GitHub Actions artifacts (gitignored)
-        ├── Summary_and_Data_Quality.csv
-        ├── Preprocessed_Data.csv
-        ├── Cross_Asset_Ratios.csv
-        ├── ML_Ready_Dataset.csv
-        └── Feature_Dictionary.csv
+    ├── processed/                        # Agent 2 outputs (gitignored; uploaded as Actions artifacts)
+    │   ├── Summary_and_Data_Quality.csv
+    │   ├── Preprocessed_Data.csv
+    │   ├── Cross_Asset_Ratios.csv
+    │   ├── ML_Ready_Dataset.csv
+    │   └── Feature_Dictionary.csv
+    └── exploration/                      # Agent 3 outputs (gitignored; uploaded as Actions artifacts)
+        ├── Executive_Summary.csv
+        ├── PCA_Overview_and_Loadings.csv
+        ├── PCA_Scores_TimeSeries.csv
+        ├── Rolling_PCA_Dynamics.csv
+        ├── Rolling_PCA_Loadings_Snapshots.csv
+        ├── Factor_Analysis_Results.csv
+        ├── Factor_Scores_TimeSeries.csv
+        ├── Hierarchical_Clustering.csv
+        └── Correlation_and_Distance_Matrix.csv
 ```
 
 ## Prerequisites
@@ -62,19 +76,31 @@ py pipeline.py --skip-fetch --skip-upload
 py pipeline.py --skip-fetch
 ```
 
+### Agent 3: Data Exploration (PCA, Rolling PCA, Factor Analysis & Hierarchical Clustering)
+```powershell
+# Full standalone run (fetches ML_Ready_Dataset from Agent 2 sheet and publishes 9 tabs)
+py data_exploration.py
+
+# Fast local re-run from Agent 2's local CSV without uploading
+py data_exploration.py --skip-fetch --skip-upload
+
+# Chained upload right after Agent 2
+py data_exploration.py --skip-fetch
+```
+
 ## Running on GitHub Actions
 
-This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflows/run-pipeline.yml), which runs automatically on every push to `main` (and manually from the **Actions** tab).
+This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflows/run-pipeline.yml), which runs Agents 1 → 2 → 3 automatically on every push to `main`, Tue–Sat at 09:00 SGT, and manually from the **Actions** tab.
 
-- **Without secrets configured**: The workflow runs in offline verification mode (`--skip-fetch --skip-upload`) using `data/raw/financial_data_raw.csv` and uploads all 5 processed CSVs as a downloadable workflow artifact (`processed-ml-datasets`).
+- **Without secrets configured**: The workflow runs Agents 2 & 3 in offline verification mode (`--skip-fetch --skip-upload`) using `data/raw/financial_data_raw.csv` and uploads both `processed-ml-datasets` and `data-exploration-outputs` as downloadable workflow artifacts.
 - **With Google Sheets sync enabled (Option A — Google Apps Script, no Google Cloud needed):**
   1. Open your destination Google Sheet and click **Extensions → Apps Script**.
   2. Paste [`apps_script/Code.gs`](apps_script/Code.gs), replace `API_TOKEN` with a strong secret token, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*).
-  3. Add `APPS_SCRIPT_URL` (the `/exec` URL), `APPS_SCRIPT_TOKEN`, `SOURCE_SHEET_ID`, and `DEST_SHEET_ID` as GitHub repository secrets under **Settings → Secrets and variables → Actions**.
+  3. Add `APPS_SCRIPT_URL` (the `/exec` URL), `APPS_SCRIPT_TOKEN`, `SOURCE_SHEET_ID`, `DEST_SHEET_ID`, and `EXPLORATION_SHEET_ID` as GitHub repository secrets under **Settings → Secrets and variables → Actions**.
 - **With Google Sheets sync enabled (Option B — Google Cloud Service Account):**
   1. In Google Cloud Console, enable the **Google Sheets API**, create a **Service Account**, and download its JSON key.
-  2. Share your source Google Sheet (**Viewer**) and destination Google Sheet (**Editor**) with the service account's email address.
-  3. Add `GOOGLE_SERVICE_ACCOUNT_JSON`, `SOURCE_SHEET_ID`, and `DEST_SHEET_ID` as GitHub repository secrets.
+  2. Share your source Google Sheet (**Viewer**) and destination Google Sheets (**Editor**) with the service account's email address.
+  3. Add `GOOGLE_SERVICE_ACCOUNT_JSON`, `SOURCE_SHEET_ID`, `DEST_SHEET_ID`, and `EXPLORATION_SHEET_ID` as GitHub repository secrets.
 
 ## Destination Google Sheet Tabs
 
@@ -90,6 +116,20 @@ This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflow
    - Causal 21-day annualized realized volatility (`vol21d_*`) for 10 benchmarks
    - Completeness flags: `valid_feature_pct`, `is_core_ml_ready`, `is_full_ml_ready`
 5. **`Feature_Dictionary`**: Full documentation of every column across all three time-series tabs (Tab, Column_Name, Category, Formula_or_Source, Economic_Meaning, Transformation, Inception_Date, ML_Notes).
+
+## Agent 3 Destination Google Sheet Tabs (`Data Exploration - PCA, FA, Clustering`)
+
+Analyzes the clean 35 daily-traded multi-asset stationary panel (`is_core_ml_ready == 1`, `4,825` trading days from `2008-03-27` to `2026-11-20`; excluding stepped central bank policy rates to avoid zero-variance rolling windows, with full 5-universe sensitivities reported in `Executive_Summary`):
+
+1. **`Executive_Summary`**: Run metadata, executive findings across all 4 methods, 5-universe sensitivity comparison (raw vs ±5σ winsorized vs 42-asset incl. policy rates vs post-2019 36-asset incl. BNDX vs full 138-feature ML matrix), and tab directory.
+2. **`PCA_Overview_and_Loadings`**: Complete 35-component scree table (Eigenvalues, % variance, Kaiser > 1, Horn's Parallel Analysis 95th percentile, Marchenko-Pastur RMT upper bound, Effective Participation Ratio, economic labels), Correlation Loadings (`PC1`–`PC12` + reconstruction $R^2$), Orthonormal Eigenvector Weights (`PC1`–`PC10`), and Asset % Contributions.
+3. **`PCA_Scores_TimeSeries`**: Daily standardized `PC1`–`PC10` factor score time series (`4,825` rows, sign-oriented with `PC1+` = Global Risk-On).
+4. **`Rolling_PCA_Dynamics`**: Strictly causal trailing 252-day (1Y) & 63-day (1Q) Rolling PCA (`4,574` rows, zero lookahead) — `PC1`–`PC5` variance %, Absorption Ratios (`AR1`/`AR3`/`AR5`), causal 252d AR5 Z-score, Effective Rank (Shannon entropy), rolling Kaiser & Marchenko-Pastur counts, 21-day PC1 subspace drift, sign-aligned bellwether loadings, Stock-Bond PC1 co-movement product, and `Systemic_Regime` classification.
+5. **`Rolling_PCA_Loadings_Snapshots`**: Annual regime averages (`2009`–`2026`), year-end & latest PC1 loadings across all 35 assets with historical stability stats, and Top 12 non-overlapping historical systemic fragility peaks.
+6. **`Factor_Analysis_Results`**: Overall & per-asset KMO, Bartlett's Test of Sphericity, Jöreskog Maximum Likelihood Factor Analysis fit indices (RMSR, RMSEA, TLI, CFI), Varimax (orthogonal) rotated loadings with communalities/uniqueness/Hofmann complexity, Promax ($\kappa = 4$ oblique) pattern matrix, and Inter-Factor Correlation Matrix ($\Phi$).
+7. **`Factor_Scores_TimeSeries`**: Daily standardized Thomson Regression Factor Scores from the Varimax MLFA model (`4,825` rows × `8` latent factors).
+8. **`Hierarchical_Clustering`**: López de Prado metric correlation-distance ($d_{ij} = \sqrt{\frac{1}{2}(1-\rho_{ij})}$) benchmark across 4 linkage methods (`Ward`, `Average`, `Complete`, `Single`) and `k = 2..12` (Cophenetic correlation, Silhouette, Calinski-Harabasz, Davies-Bouldin, intra/inter-cluster correlations), Optimal Leaf-Ordered cluster assignments, **Hierarchical Risk Parity (HRP)** diversification weights, cluster cohesion profiles, and complete 34-step dendrogram merge history.
+9. **`Correlation_and_Distance_Matrix`**: Full `35 × 35` Pearson correlation matrix and correlation distance matrix ordered by Ward Optimal Leaf Ordering (quasi-diagonalized).
 
 ## ML Usage Guidelines (Zero Lookahead)
 
