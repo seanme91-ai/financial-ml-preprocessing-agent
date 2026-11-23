@@ -1,14 +1,17 @@
 """
 Daily Financial Market Data Fetcher & Google Sheet Appender (Agent 1).
 
-Fetches the latest available closing prices, yields, and central bank policy rates
-for all 44 global multi-asset series from official/free feeds (Yahoo Finance,
+Fetches strict settled closing prices, yields, and central bank policy rates
+for the previous completed trading day (Monday-Friday, zero intraday leakage)
+across all 44 global multi-asset series from official/free feeds (Yahoo Finance,
 US Treasury, NY Fed, ECB, BIS, HKMA, CFETS/PBOC, ChinaBond, MAS) and appends a
-single daily row (Asia/Singapore date, with duplicate-date guard) to the
-'Financial Data Updates' source Google Sheet.
+single daily row (stamped with that trading date, with chronological/duplicate
+guard) to the 'Financial Data Updates' source Google Sheet.
+
+Scheduled Tue-Sat at 09:00 Asia/Singapore (01:00 UTC), after Mon-Fri US markets settle.
 
 Usage:
-    py fetch_daily_data.py --dry-run          # Fetch live data & print row without writing
+    py fetch_daily_data.py --dry-run          # Fetch settled closes & print row without writing
     py fetch_daily_data.py --backend webapp   # Run via Google Apps Script bridge (GitHub Actions)
     py fetch_daily_data.py --backend gsheets  # Run locally via Antigravity gsheets CLI
 """
@@ -118,19 +121,31 @@ def safe_float(val: Any) -> float | None:
         return None
 
 
-def fetch_yfinance_all() -> tuple[dict[str, float], dict[str, str]]:
-    """Fetch latest daily closes for all 31 Yahoo Finance market assets + ^TNX/^TYX fallbacks."""
+def last_completed_trading_day(today_sgt: date) -> date:
+    """Return the most recent completed Mon-Fri trading date strictly before today_sgt."""
+    d = today_sgt - timedelta(days=1)
+    while d.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        d -= timedelta(days=1)
+    return d
+
+
+def fetch_yfinance_all(target_date: date) -> tuple[dict[str, float], dict[str, str]]:
+    """Fetch strict settled daily closes on or before target_date (zero intraday leakage)."""
     extra = {"_TNX": "^TNX", "_TYX": "^TYX"}
     all_map = {**YF_TICKER_MAP, **extra}
     tickers = list(all_map.values())
     values: dict[str, float] = {}
     dates: dict[str, str] = {}
 
-    df = yf.download(tickers, period="7d", interval="1d", progress=False, auto_adjust=False)
+    start_str = (target_date - timedelta(days=14)).isoformat()
+    end_str = (target_date + timedelta(days=1)).isoformat()  # yfinance end is exclusive
+    df = yf.download(tickers, start=start_str, end=end_str, interval="1d", progress=False, auto_adjust=False)
     closes = df["Close"] if "Close" in df else df
     for col_name, ticker in all_map.items():
         try:
             series = closes[ticker].dropna()
+            # Explicit guard: exclude any bar newer than target_date
+            series = series[series.index.date <= target_date]
             if len(series) > 0:
                 val = safe_float(series.iloc[-1])
                 if val is not None:
@@ -141,11 +156,10 @@ def fetch_yfinance_all() -> tuple[dict[str, float], dict[str, str]]:
     return values, dates
 
 
-def fetch_us_treasury() -> dict[str, float]:
-    """Official US Treasury daily yield curve CSV (2Y, 10Y, 30Y)."""
+def fetch_us_treasury(target_date: date) -> dict[str, float]:
+    """Official US Treasury daily yield curve CSV (2Y, 10Y, 30Y) on or before target_date."""
     out: dict[str, float] = {}
-    today = date.today()
-    for yr in (today.year, today.year - 1):
+    for yr in (target_date.year, target_date.year - 1):
         url = (
             f"https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
             f"daily-treasury-rates.csv/{yr}/all?type=daily_treasury_yield_curve"
@@ -153,15 +167,20 @@ def fetch_us_treasury() -> dict[str, float]:
         )
         try:
             txt = http_get_text(url, timeout=12)
-            rows = list(csv.DictReader(io.StringIO(txt)))
-            if rows:
-                latest = rows[0]
+            for row in csv.DictReader(io.StringIO(txt)):
+                raw_dt = str(row.get("Date", "")).strip()
+                try:
+                    row_dt = datetime.strptime(raw_dt, "%m/%d/%Y").date()
+                except ValueError:
+                    continue
+                if row_dt > target_date:
+                    continue
                 for col, key in [
                     ("US 2Y Yield (pct)", "2 Yr"),
                     ("US 10Y Yield (pct)", "10 Yr"),
                     ("US 30Y Yield (pct)", "30 Yr"),
                 ]:
-                    v = safe_float(latest.get(key))
+                    v = safe_float(row.get(key))
                     if v is not None:
                         out[col] = v
                 if out:
@@ -171,54 +190,65 @@ def fetch_us_treasury() -> dict[str, float]:
     return out
 
 
-def fetch_nyfed_effr() -> tuple[dict[str, float], str]:
-    """Official NY Fed Effective Federal Funds Rate & target range."""
-    url = "https://markets.newyorkfed.org/api/rates/unsecured/effr/last/3.json"
+def fetch_nyfed_effr(target_date: date) -> tuple[dict[str, float], str]:
+    """Official NY Fed Effective Federal Funds Rate & target range on or before target_date."""
+    url = "https://markets.newyorkfed.org/api/rates/unsecured/effr/last/10.json"
     data = json.loads(http_get_text(url, timeout=10))
-    rates = data.get("refRates", [])
-    if not rates:
-        return {}, ""
-    latest = rates[0]
-    val = safe_float(latest.get("percentRate"))
-    lo = safe_float(latest.get("targetRateFrom"))
-    hi = safe_float(latest.get("targetRateTo"))
-    note = f"Fed target {lo:.2f}-{hi:.2f} pct" if (lo is not None and hi is not None) else ""
-    return ({"Fed Funds Rate (pct)": val} if val is not None else {}), note
+    for rec in data.get("refRates", []):
+        eff_dt = str(rec.get("effectiveDate", "")).strip()
+        if eff_dt and eff_dt > target_date.isoformat():
+            continue
+        val = safe_float(rec.get("percentRate"))
+        lo = safe_float(rec.get("targetRateFrom"))
+        hi = safe_float(rec.get("targetRateTo"))
+        note = f"Fed target {lo:.2f}-{hi:.2f} pct" if (lo is not None and hi is not None) else ""
+        if val is not None:
+            return {"Fed Funds Rate (pct)": val}, note
+    return {}, ""
 
 
-def fetch_ecb_dfr() -> dict[str, float]:
-    """Official ECB Deposit Facility Rate."""
-    url = "https://data-api.ecb.europa.eu/service/data/FM/D.U2.EUR.4F.KR.DFR.LEV?lastNObservations=3&format=csvdata"
+def fetch_ecb_dfr(target_date: date) -> dict[str, float]:
+    """Official ECB Deposit Facility Rate on or before target_date."""
+    url = "https://data-api.ecb.europa.eu/service/data/FM/D.U2.EUR.4F.KR.DFR.LEV?lastNObservations=10&format=csvdata"
     txt = http_get_text(url, timeout=12)
     rows = list(csv.DictReader(io.StringIO(txt)))
     for row in reversed(rows):
+        tp = str(row.get("TIME_PERIOD", "")).strip()
+        if tp and tp > target_date.isoformat():
+            continue
         v = safe_float(row.get("OBS_VALUE"))
         if v is not None:
             return {"ECB Deposit Rate (pct)": v}
     return {}
 
 
-def fetch_bis_boj() -> dict[str, float]:
-    """Official BIS Central Bank Policy Rate for Japan (BOJ)."""
-    url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/D.JP?lastNObservations=3&format=csv"
+def fetch_bis_boj(target_date: date) -> dict[str, float]:
+    """Official BIS Central Bank Policy Rate for Japan (BOJ) on or before target_date."""
+    url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/D.JP?lastNObservations=10&format=csv"
     txt = http_get_text(url, timeout=12)
     rows = list(csv.DictReader(io.StringIO(txt)))
     for row in reversed(rows):
+        tp = str(row.get("TIME_PERIOD", "")).strip()
+        if tp and tp > target_date.isoformat():
+            continue
         v = safe_float(row.get("OBS_VALUE"))
         if v is not None:
             return {"BOJ Policy Rate (pct)": v}
     return {}
 
 
-def fetch_hkma_rates() -> dict[str, float]:
-    """Official HKMA Base Rate & 1-Month HIBOR Fixing."""
+def fetch_hkma_rates(target_date: date) -> dict[str, float]:
+    """Official HKMA Base Rate & 1-Month HIBOR Fixing on or before target_date."""
     out: dict[str, float] = {}
     url = (
         "https://api.hkma.gov.hk/public/market-data-and-statistics/"
-        "daily-monetary-statistics/daily-figures-interbank-liquidity?pagesize=5"
+        "daily-monetary-statistics/daily-figures-interbank-liquidity?pagesize=10"
     )
     data = json.loads(http_get_text(url, timeout=12))
     for rec in data.get("result", {}).get("records", []):
+        dt_str = str(rec.get("end_of_date", "")).strip()
+        if dt_str and dt_str > target_date.isoformat():
+            continue
         if "HK Base Rate (pct)" not in out:
             v = safe_float(rec.get("disc_win_base_rate"))
             if v is not None:
@@ -249,13 +279,12 @@ def fetch_china_lpr() -> dict[str, float]:
     return out
 
 
-def fetch_china_10y() -> dict[str, float]:
-    """Official ChinaBond 10Y Government Bond Yield (with CNBC CN10Y fallback)."""
-    end_dt = date.today()
-    start_dt = end_dt - timedelta(days=14)
+def fetch_china_10y(target_date: date) -> dict[str, float]:
+    """Official ChinaBond 10Y Government Bond Yield on or before target_date (with CNBC CN10Y fallback)."""
+    start_dt = target_date - timedelta(days=14)
     url = (
         f"https://yield.chinabond.com.cn/cbweb-pbc-web/pbc/historyQuery"
-        f"?startDate={start_dt.isoformat()}&endDate={end_dt.isoformat()}&gjqx=0&qxId=ycqx&locale=en_US"
+        f"?startDate={start_dt.isoformat()}&endDate={target_date.isoformat()}&gjqx=0&qxId=ycqx&locale=en_US"
     )
     try:
         html = http_get_text(url, timeout=12)
@@ -266,6 +295,9 @@ def fetch_china_10y() -> dict[str, float]:
                 for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)
             ]
             if len(cells) >= 9 and "Government Bond Yield Curve" in cells[0]:
+                row_dt = cells[1].strip()
+                if row_dt and row_dt > target_date.isoformat():
+                    continue
                 v = safe_float(cells[8])  # 10Y column
                 if v is not None and 0.1 < v < 15.0:
                     return {"China 10Y Yield (pct)": v}
@@ -288,8 +320,8 @@ def fetch_china_10y() -> dict[str, float]:
     return {}
 
 
-def fetch_mas_sg_10y() -> dict[str, float]:
-    """Official MAS Daily SGS Benchmark 10-Year Yield."""
+def fetch_mas_sg_10y(target_date: date) -> dict[str, float]:
+    """Official MAS Daily SGS Benchmark 10-Year Yield on or before target_date."""
     url = "https://eservices.mas.gov.sg/statistics/fdanet/SgsBenchmarkIssuePrices.aspx"
     html = http_get_text(url, timeout=12)
     rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S)
@@ -300,25 +332,33 @@ def fetch_mas_sg_10y() -> dict[str, float]:
             for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)
         ]
         cells = [c for c in cells if c and c != "&nbsp;"]
-        # Main benchmark table rows start with DD Mon YYYY and have 17 columns; index 8 is 10-Year Yield
         if len(cells) >= 10 and re.match(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$", cells[0]):
+            try:
+                row_dt = datetime.strptime(cells[0], "%d %b %Y").date()
+            except ValueError:
+                continue
+            if row_dt > target_date:
+                continue
             v = safe_float(cells[8])
             if v is not None and 0.1 < v < 15.0:
                 latest_yield = v
     return {"SG 10Y Yield (pct)": latest_yield} if latest_yield is not None else {}
 
 
-def fetch_mas_sora() -> dict[str, float]:
-    """Official MAS Domestic Interest Rates Datastore API for SORA."""
+def fetch_mas_sora(target_date: date) -> dict[str, float]:
+    """Official MAS Domestic Interest Rates Datastore API for SORA on or before target_date."""
     url = (
         "https://eservices.mas.gov.sg/api/action/datastore/search.json"
-        "?resource_id=9a0bf149-308c-4bd2-832d-76c8e6cb47ed&limit=5&sort=end_of_day%20desc"
+        "?resource_id=9a0bf149-308c-4bd2-832d-76c8e6cb47ed&limit=10&sort=end_of_day%20desc"
     )
     txt = http_get_text(url, timeout=10)
     if not txt.lstrip().startswith("{"):
         return {}
     data = json.loads(txt)
     for rec in data.get("result", {}).get("records", []):
+        dt_str = str(rec.get("end_of_day", "")).strip()
+        if dt_str and dt_str > target_date.isoformat():
+            continue
         v = safe_float(rec.get("sora"))
         if v is not None:
             return {"SG SORA (pct)": v}
@@ -346,29 +386,29 @@ def fetch_cnbc_us_yields_fallback() -> dict[str, float]:
     return out
 
 
-def fetch_all_market_data() -> tuple[dict[str, float], list[str], str]:
-    """Fetch all 44 financial series in parallel and return (values_dict, source_warnings, fed_note)."""
+def fetch_all_market_data(target_date: date) -> tuple[dict[str, float], list[str], str]:
+    """Fetch strict settled closes on or before target_date for all 44 financial series in parallel."""
     values: dict[str, float] = {}
     warnings: list[str] = []
     fed_note = ""
 
     # 1. Yahoo Finance batch (31 market assets + ^TNX/^TYX fallbacks)
-    yf_vals, yf_dates = fetch_yfinance_all()
+    yf_vals, yf_dates = fetch_yfinance_all(target_date)
     for col in YF_TICKER_MAP:
         if col in yf_vals:
             values[col] = yf_vals[col]
 
     # 2. Official rate APIs in parallel
     tasks = {
-        "US_Treasury": fetch_us_treasury,
-        "NYFed_EFFR": fetch_nyfed_effr,
-        "ECB_DFR": fetch_ecb_dfr,
-        "BIS_BOJ": fetch_bis_boj,
-        "HKMA": fetch_hkma_rates,
+        "US_Treasury": lambda: fetch_us_treasury(target_date),
+        "NYFed_EFFR": lambda: fetch_nyfed_effr(target_date),
+        "ECB_DFR": lambda: fetch_ecb_dfr(target_date),
+        "BIS_BOJ": lambda: fetch_bis_boj(target_date),
+        "HKMA": lambda: fetch_hkma_rates(target_date),
         "China_LPR": fetch_china_lpr,
-        "China_10Y": fetch_china_10y,
-        "MAS_SG10Y": fetch_mas_sg_10y,
-        "MAS_SORA": fetch_mas_sora,
+        "China_10Y": lambda: fetch_china_10y(target_date),
+        "MAS_SG10Y": lambda: fetch_mas_sg_10y(target_date),
+        "MAS_SORA": lambda: fetch_mas_sora(target_date),
     }
     with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
         futures = {name: ex.submit(fn) for name, fn in tasks.items()}
@@ -397,11 +437,12 @@ def fetch_all_market_data() -> tuple[dict[str, float], list[str], str]:
             pass
 
     latest_us_dt = yf_dates.get("S&P 500", "")
-    if latest_us_dt and fed_note:
-        fed_note = f"US close {latest_us_dt}; {fed_note}"
-    elif latest_us_dt:
-        fed_note = f"US close {latest_us_dt}"
-    return values, warnings, fed_note
+    parts = [f"Settled close {target_date.isoformat()}"]
+    if latest_us_dt and latest_us_dt != target_date.isoformat():
+        parts.append(f"US close {latest_us_dt}")
+    if fed_note:
+        parts.append(fed_note)
+    return values, warnings, "; ".join(parts)
 
 
 def call_apps_script(payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
@@ -545,7 +586,7 @@ def main() -> None:
     parser.add_argument("--source-id", default=os.environ.get("SOURCE_SHEET_ID", ""), help="Source Google Sheet ID")
     parser.add_argument("--sheet-name", default="Sheet1", help="Worksheet tab name")
     parser.add_argument("--backend", choices=["auto", "webapp", "gsheets"], default="auto")
-    parser.add_argument("--date", default="", help="Override date YYYY-MM-DD (default: today Asia/Singapore)")
+    parser.add_argument("--date", default="", help="Override settled trading date YYYY-MM-DD (default: previous completed Mon-Fri)")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and print row without appending to Google Sheet")
     parser.add_argument(
         "--fallback-csv",
@@ -554,29 +595,31 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    today_str = args.date.strip() or datetime.now(SGT).strftime("%Y-%m-%d")
+    today_sgt = datetime.now(SGT).date()
+    target_date = date.fromisoformat(args.date.strip()) if args.date.strip() else last_completed_trading_day(today_sgt)
+    target_str = target_date.isoformat()
     backend = "local_csv" if (args.dry_run and resolve_backend(args.backend) == "local_csv") else resolve_backend(args.backend)
 
-    print(f"[Agent 1] Daily Financial Data Update for {today_str} (SGT) via backend={backend}")
+    print(f"[Agent 1] Settled previous-day close update for trading date {target_str} (today SGT: {today_sgt}) via backend={backend}")
     headers, tail_rows = load_sheet_headers_and_tail(
         backend, args.source_id, args.sheet_name, Path(args.fallback_csv)
     )
     last_date = str(tail_rows[-1][0]).strip() if tail_rows and tail_rows[-1] else ""
     print(f"  Sheet columns: {len(headers)} | Latest recorded date: {last_date}")
 
-    if last_date == today_str and not args.dry_run:
-        print(f"  [SKIP] Row for {today_str} already exists in '{args.sheet_name}'. Nothing to append.")
+    if last_date and last_date >= target_str and not args.dry_run:
+        print(f"  [SKIP] Latest recorded date ({last_date}) is already >= target trading date ({target_str}). Nothing to append.")
         return
 
-    print("  Fetching live market data from Yahoo Finance, US Treasury, NY Fed, ECB, BIS, HKMA, CFETS, ChinaBond, MAS...")
-    fetched, warnings, fed_note = fetch_all_market_data()
-    print(f"  Live series fetched: {len(fetched)} / {len(headers) - 2}")
+    print(f"  Fetching strict settled closes (<= {target_str}) from Yahoo Finance, US Treasury, NY Fed, ECB, BIS, HKMA, CFETS, ChinaBond, MAS...")
+    fetched, warnings, fed_note = fetch_all_market_data(target_date)
+    print(f"  Settled series fetched: {len(fetched)} / {len(headers) - 2}")
     if warnings:
         print(f"  Non-fatal feed warnings: {warnings}")
 
-    row, carried = build_daily_row(headers, tail_rows, fetched, today_str, fed_note)
+    row, carried = build_daily_row(headers, tail_rows, fetched, target_str, fed_note)
     print(f"  Carried forward ({len(carried)}): {carried}")
-    print("\n=== PREPARED DAILY ROW ===")
+    print("\n=== PREPARED SETTLED CLOSE ROW ===")
     for col, val in zip(headers, row):
         print(f"  {col:28s}: {val}")
 
@@ -590,18 +633,18 @@ def main() -> None:
                 "action": "append_row",
                 "source_id": args.source_id,
                 "sheet_name": args.sheet_name,
-                "date": today_str,
+                "date": target_str,
                 "row": row,
             }
         )
         if resp.get("skipped"):
             print(f"\n[SKIP] {resp.get('reason')}")
         else:
-            print(f"\n[DONE] Appended row {resp.get('last_row')} for {today_str} to Financial Data Updates!")
+            print(f"\n[DONE] Appended row {resp.get('last_row')} for {target_str} to Financial Data Updates!")
     elif backend == "gsheets":
         csv_row = ",".join(str(v) for v in row)
         run_gsheets_cmd(["mutate", "append", args.source_id, f"{args.sheet_name}!A1", csv_row])
-        print(f"\n[DONE] Appended row for {today_str} via gsheets CLI!")
+        print(f"\n[DONE] Appended row for {target_str} via gsheets CLI!")
     else:
         raise RuntimeError("No writable Google Sheets backend configured. Set APPS_SCRIPT_URL + APPS_SCRIPT_TOKEN.")
 

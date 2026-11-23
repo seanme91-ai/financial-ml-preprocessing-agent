@@ -8,7 +8,7 @@ A reproducible, strictly causal (zero lookahead bias) Python pipeline that fetch
 financial-ml-preprocessing-agent/
 ├── .github/
 │   └── workflows/
-│       └── run-pipeline.yml              # Daily 09:00 SGT & push-triggered GitHub Actions runner
+│       └── run-pipeline.yml              # Tue-Sat 09:00 SGT (Mon-Fri settled closes) & push runner
 ├── apps_script/
 │   └── Code.gs                           # Google Apps Script Web App bridge (read/append/publish)
 ├── fetch_daily_data.py                   # Agent 1: Daily 44-asset market data fetcher & sheet appender

@@ -2,8 +2,8 @@ name: Daily Financial Data Update & ML Preprocessing Pipeline
 
 on:
   schedule:
-    # Runs daily at 09:00 Asia/Singapore (01:00 UTC)
-    - cron: "0 1 * * *"
+    # Runs Tue-Sat at 09:00 Asia/Singapore (01:00 UTC) to capture Mon-Fri settled closes
+    - cron: "0 1 * * 2-6"
   push:
     branches:
       - main
