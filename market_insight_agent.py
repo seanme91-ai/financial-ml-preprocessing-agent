@@ -781,6 +781,73 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return json.loads(cleaned)
 
 
+def parse_structured_narrative(text: str) -> dict[str, Any]:
+    """
+    Parse structured narrative output from Gemini. Supports quote-proof ===SECTION===
+    delimiters (primary) and automatically falls back to JSON extraction if JSON is returned.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("Empty response text from Gemini.")
+
+    # Check if structured ===SECTION=== markers are present
+    sec_pattern = re.compile(
+        r"^===\s*(BOTTOM_LINE|REGIME|STRUCTURAL|FACTORS|ONGOING|WATCHPOINTS)\s*===\s*$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    matches = list(sec_pattern.finditer(cleaned))
+    if not matches:
+        return extract_json_object(cleaned)
+
+    raw_sections: dict[str, str] = {}
+    for idx_m, m in enumerate(matches):
+        key = m.group(1).upper()
+        start = m.end()
+        end = matches[idx_m + 1].start() if idx_m + 1 < len(matches) else len(cleaned)
+        raw_sections[key] = cleaned[start:end].strip()
+
+    def parse_bullets(block: str) -> list[str]:
+        out: list[str] = []
+        for line in block.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            s = re.sub(r"^(?:[-*•]|\d+[.)])\s*", "", s).strip()
+            s = s.replace("**", "")
+            if s:
+                out.append(s)
+        return out
+
+    factors: dict[str, str] = {}
+    for line in parse_bullets(raw_sections.get("FACTORS", "")):
+        fm = re.match(r"^(F\d+)\s*[:|\-–—]\s*(.+)$", line)
+        if fm:
+            factors[fm.group(1).upper()] = fm.group(2).strip()
+
+    ongoing: list[dict[str, str]] = []
+    for line in parse_bullets(raw_sections.get("ONGOING", "")):
+        if "|" in line:
+            t, d = line.split("|", 1)
+            ongoing.append({"title": t.strip(), "detail": d.strip()})
+        elif ":" in line:
+            t, d = line.split(":", 1)
+            ongoing.append({"title": t.strip(), "detail": d.strip()})
+        else:
+            ongoing.append({"title": "Macro Development", "detail": line})
+
+    parsed = {
+        "bottom_line_bullets": parse_bullets(raw_sections.get("BOTTOM_LINE", "")),
+        "regime_bullets": parse_bullets(raw_sections.get("REGIME", "")),
+        "structural_bullets": parse_bullets(raw_sections.get("STRUCTURAL", "")),
+        "factor_commentary": factors,
+        "ongoing_developments": ongoing,
+        "watchpoints": parse_bullets(raw_sections.get("WATCHPOINTS", "")),
+    }
+    if not parsed["bottom_line_bullets"] and not parsed["ongoing_developments"]:
+        raise ValueError("Parsed section markers contained no narrative bullets.")
+    return parsed
+
+
 def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MODEL) -> dict[str, Any]:
     """
     Call Google Gemini API with Google Search grounding enabled to synthesize live ongoing
@@ -844,23 +911,37 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
         "Rules:\n"
         "- Never invent or alter any number from Agent 3's JSON below; cite exact figures.\n"
         "- Write in crisp, plain English so a busy decision-maker can scan and understand every takeaway in 2 minutes.\n"
-        "- Return ONLY valid JSON (inside a ```json ... ``` block) with these exact keys:\n"
-        "  {\n"
-        '    "bottom_line_bullets": [4 concise executive bullets with bold lead-ins as plain text like "Lead-In: detail"],\n'
-        '    "regime_bullets": [3 concise bullets diagnosing Rolling PCA coupling, 63d vs 252d spread, and historical comparison],\n'
-        '    "structural_bullets": [3 concise bullets explaining Stock-Bond coupling, Commodity/Oil loading flips, and Asia/regional shifts],\n'
-        '    "factor_commentary": {"F1": "...", "F2": "...", "F3": "...", "F4": "...", "F5": "...", "F6": "...", "F7": "...", "F8": "..."},\n'
-        '    "ongoing_developments": [5 to 6 objects {"title": "...", "detail": "..."} tying live current news to Agent 3 signals],\n'
-        '    "watchpoints": [5 concrete, actionable watchpoints for the next 1-2 weeks with trigger levels/events]\n'
-        "  }\n\n"
+        "- Do NOT output JSON or markdown code fences. Follow the EXACT section template below (one bullet per line):\n\n"
+        "===BOTTOM_LINE===\n"
+        "- <Short Lead-In>: <1-2 sentence executive takeaway> (write exactly 4 bullets)\n\n"
+        "===REGIME===\n"
+        "- <Short Lead-In>: <Rolling PCA coupling, 63d vs 252d spread, historical comparison> (write exactly 3 bullets)\n\n"
+        "===STRUCTURAL===\n"
+        "- <Short Lead-In>: <Stock-Bond coupling, Commodity/Oil loading flip, Asia/regional shifts> (write exactly 3 bullets)\n\n"
+        "===FACTORS===\n"
+        "F1: <1 concise sentence explaining F1's 1D/1W/1M move and macro driver>\n"
+        "F2: <1 concise sentence>\n"
+        "F3: <1 concise sentence>\n"
+        "F4: <1 concise sentence>\n"
+        "F5: <1 concise sentence>\n"
+        "F6: <1 concise sentence>\n"
+        "F7: <1 concise sentence>\n"
+        "F8: <1 concise sentence>\n\n"
+        "===ONGOING===\n"
+        "- <Headline Title> | <2-3 sentences tying live current macro/news development directly to Agent 3 signals> (write 5-6 bullets)\n\n"
+        "===WATCHPOINTS===\n"
+        "- <Watchpoint Lead-In>: <concrete trigger level, upcoming macro release, or regime threshold for the next 1-2 weeks> (write exactly 5 bullets)\n\n"
         f"AGENT 3 VERIFIED QUANTITATIVE DATA:\n{json.dumps(prompt_data, indent=2)}"
     )
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    gen_cfg: dict[str, Any] = {"temperature": 0.25, "maxOutputTokens": 32768}
+    if model.startswith("gemini-4"):
+        gen_cfg["thinkingConfig"] = {"thinkingLevel": "medium"}
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}],
-        "generationConfig": {"temperature": 0.25, "maxOutputTokens": 8192},
+        "generationConfig": gen_cfg,
     }
     req_bytes = json.dumps(payload).encode("utf-8")
 
@@ -874,7 +955,7 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=150) as resp:
+            with urllib.request.urlopen(req, timeout=180) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
             body = json.loads(raw)
             cand = (body.get("candidates") or [{}])[0]
@@ -882,7 +963,7 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
             full_text = "\n".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought"))
             if not full_text.strip():
                 full_text = "\n".join(p.get("text", "") for p in parts if "text" in p)
-            parsed = extract_json_object(full_text)
+            parsed = parse_structured_narrative(full_text)
 
             # Extract Google Search grounding sources if present
             sources: list[dict[str, str]] = []
@@ -897,6 +978,7 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
                     sources.append({"title": title or uri, "uri": uri})
 
             fallback = build_deterministic_narrative(brief)
+            print(f"  Gemini synthesis succeeded ({len(full_text):,} chars, {len(sources)} search grounding sources).")
             return {
                 "mode": "gemini_search_grounded",
                 "model": model,

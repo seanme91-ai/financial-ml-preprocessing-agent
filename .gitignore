@@ -2,6 +2,7 @@
 .env
 *.json
 !package.json
+!apps_script/appsscript.json
 
 # Generated processed, exploration & insight outputs (built fresh on every run & uploaded as Actions artifacts)
 data/processed/
