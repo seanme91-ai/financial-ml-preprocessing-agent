@@ -108,6 +108,7 @@ jobs:
           DRIVE_AGENT_FOLDER_ID: ${{ secrets.DRIVE_AGENT_FOLDER_ID }}
           INSIGHT_MASTER_DOC_ID: ${{ secrets.INSIGHT_MASTER_DOC_ID }}
           INSIGHT_ARCHIVE_FOLDER_ID: ${{ secrets.INSIGHT_ARCHIVE_FOLDER_ID }}
+          GEMINI_API_KEY_NEON: ${{ secrets.GEMINI_API_KEY_NEON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
         run: |

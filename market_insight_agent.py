@@ -18,8 +18,8 @@ Environment variables (optional in offline mode):
     DRIVE_AGENT_FOLDER_ID    Google Drive 'Agent Folder' ID (default: searches by name)
     INSIGHT_MASTER_DOC_ID    Master Google Doc ID for in-place updates (auto-located if blank)
     INSIGHT_ARCHIVE_FOLDER_ID Archive subfolder ID (auto-located/created if blank)
-    GEMINI_API_KEY           Google Gemini API key for live Search-grounded macro synthesis
-    GEMINI_MODEL             Gemini model name (default: gemini-2.5-flash)
+    GEMINI_API_KEY_NEON      Google Gemini API key for live Search-grounded macro synthesis (also accepts GEMINI_API_KEY)
+    GEMINI_MODEL             Gemini model name (default: gemini-4-neon)
     APPS_SCRIPT_URL          Google Apps Script Web App /exec URL
     APPS_SCRIPT_TOKEN        Shared secret token for Apps Script Web App
     GOOGLE_SERVICE_ACCOUNT_JSON  Optional Google Cloud Service Account JSON (path or raw string)
@@ -72,7 +72,7 @@ DEFAULT_EXPLORATION_ID = os.environ.get("EXPLORATION_SHEET_ID", "")
 DEFAULT_AGENT_FOLDER_ID = os.environ.get("DRIVE_AGENT_FOLDER_ID", "")
 DEFAULT_MASTER_DOC_ID = os.environ.get("INSIGHT_MASTER_DOC_ID", "")
 DEFAULT_ARCHIVE_FOLDER_ID = os.environ.get("INSIGHT_ARCHIVE_FOLDER_ID", "")
-DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-4-neon")
 
 MASTER_DOC_TITLE = "4. Market Dynamics & Macro Insights"
 ARCHIVE_FOLDER_NAME = "4. Market Insights Archive"
@@ -786,9 +786,12 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
     Call Google Gemini API with Google Search grounding enabled to synthesize live ongoing
     macro/market developments directly linked to Agent 3's quantitative signals.
     """
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = (
+        os.environ.get("GEMINI_API_KEY_NEON", "").strip()
+        or os.environ.get("GEMINI_API_KEY", "").strip()
+    )
     if not api_key:
-        print("  [info] GEMINI_API_KEY not set — using deterministic quantitative synthesis.")
+        print("  [info] GEMINI_API_KEY_NEON / GEMINI_API_KEY not set — using deterministic quantitative synthesis.")
         return build_deterministic_narrative(brief)
 
     # Compact verified payload for the prompt
@@ -856,7 +859,7 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}],
-        "generationConfig": {"temperature": 0.25, "maxOutputTokens": 4096},
+        "generationConfig": {"temperature": 0.25, "maxOutputTokens": 8192},
     }
     req_bytes = json.dumps(payload).encode("utf-8")
 
@@ -870,12 +873,14 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=150) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
             body = json.loads(raw)
             cand = (body.get("candidates") or [{}])[0]
             parts = cand.get("content", {}).get("parts", [])
-            full_text = "\n".join(p.get("text", "") for p in parts if "text" in p)
+            full_text = "\n".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought"))
+            if not full_text.strip():
+                full_text = "\n".join(p.get("text", "") for p in parts if "text" in p)
             parsed = extract_json_object(full_text)
 
             # Extract Google Search grounding sources if present
@@ -902,6 +907,13 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
                 "watchpoints": parsed.get("watchpoints") or fallback["watchpoints"],
                 "grounding_sources": sources[:10],
             }
+        except urllib.error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="replace")[:500]
+            last_err = RuntimeError(f"HTTP {he.code}: {err_body}")
+            if attempt < 3:
+                wait_s = 4 * attempt
+                print(f"  [retry {attempt}/2] Gemini API call failed: {last_err} — retrying in {wait_s}s...")
+                time.sleep(wait_s)
         except Exception as exc:
             last_err = exc
             if attempt < 3:
