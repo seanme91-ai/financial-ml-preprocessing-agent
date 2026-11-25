@@ -447,3 +447,17 @@ function handlePublishDoc(req) {
     archive_doc_url: archiveRes.webViewLink || ("https://docs.google.com/document/d/" + archiveRes.id + "/edit")
   });
 }
+
+/**
+ * Run this function ONCE from the Apps Script editor to trigger OAuth authorization
+ * for Google Drive + UrlFetchApp scopes required by Agent 4's publish_doc action.
+ */
+function authorizeDriveAccess() {
+  const it = DriveApp.getFoldersByName("Agent Folder");
+  const found = it.hasNext() ? it.next().getName() : "Not found (will create on run)";
+  const probe = UrlFetchApp.fetch("https://www.googleapis.com/drive/v3/about?fields=user", {
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  Logger.log("Authorized! Agent Folder: " + found + " | Drive v3 HTTP " + probe.getResponseCode());
+}

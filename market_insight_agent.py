@@ -68,11 +68,11 @@ def load_dotenv(env_path: Path) -> None:
 
 load_dotenv(BASE_DIR / ".env")
 
-DEFAULT_EXPLORATION_ID = os.environ.get("EXPLORATION_SHEET_ID", "")
-DEFAULT_AGENT_FOLDER_ID = os.environ.get("DRIVE_AGENT_FOLDER_ID", "")
-DEFAULT_MASTER_DOC_ID = os.environ.get("INSIGHT_MASTER_DOC_ID", "")
-DEFAULT_ARCHIVE_FOLDER_ID = os.environ.get("INSIGHT_ARCHIVE_FOLDER_ID", "")
-DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-4-neon")
+DEFAULT_EXPLORATION_ID = (os.environ.get("EXPLORATION_SHEET_ID") or "").strip()
+DEFAULT_AGENT_FOLDER_ID = (os.environ.get("DRIVE_AGENT_FOLDER_ID") or "").strip()
+DEFAULT_MASTER_DOC_ID = (os.environ.get("INSIGHT_MASTER_DOC_ID") or "").strip()
+DEFAULT_ARCHIVE_FOLDER_ID = (os.environ.get("INSIGHT_ARCHIVE_FOLDER_ID") or "").strip()
+DEFAULT_GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "").strip() or "gemini-4-neon"
 
 MASTER_DOC_TITLE = "4. Market Dynamics & Macro Insights"
 ARCHIVE_FOLDER_NAME = "4. Market Insights Archive"
@@ -786,6 +786,7 @@ def synthesize_with_gemini(brief: dict[str, Any], model: str = DEFAULT_GEMINI_MO
     Call Google Gemini API with Google Search grounding enabled to synthesize live ongoing
     macro/market developments directly linked to Agent 3's quantitative signals.
     """
+    model = (model or "").strip() or "gemini-4-neon"
     api_key = (
         os.environ.get("GEMINI_API_KEY_NEON", "").strip()
         or os.environ.get("GEMINI_API_KEY", "").strip()
