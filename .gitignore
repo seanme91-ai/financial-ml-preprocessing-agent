@@ -3,9 +3,10 @@
 *.json
 !package.json
 
-# Generated processed & exploration outputs (built fresh on every run & uploaded as Actions artifacts)
+# Generated processed, exploration & insight outputs (built fresh on every run & uploaded as Actions artifacts)
 data/processed/
 data/exploration/
+data/insights/
 
 # Python caches & virtual environments
 __pycache__/

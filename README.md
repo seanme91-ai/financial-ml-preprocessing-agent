@@ -1,9 +1,10 @@
-# Financial ML Preprocessing, Cross-Asset Ratio & Data Exploration Pipeline (Agents 1–3)
+# Financial ML Preprocessing, Cross-Asset Exploration & Market Insight Pipeline (Agents 1–4)
 
-A reproducible, strictly causal (zero lookahead bias) three-agent Python pipeline that:
+A reproducible, strictly causal (zero lookahead bias) four-agent Python pipeline that:
 1. **Agent 1 (`fetch_daily_data.py`)**: Fetches strict settled Mon–Fri closes across 44 global multi-asset series and appends daily updates to the source Google Sheet.
 2. **Agent 2 (`pipeline.py`)**: Audits data validity, fixes verified data corruptions while preserving genuine historical market events, engineers 48 cross-asset ratios/spreads/FX crosses, generates a 148-column ML-ready feature matrix, and publishes 5 formatted tabs to the `Preprocessed Data` Google Sheet.
-3. **Agent 3 (`data_exploration.py`)**: Consumes Agent 2's `ML_Ready_Dataset`, runs **Full-Sample PCA**, **Strictly Causal Rolling PCA (252d & 63d)**, **Maximum Likelihood Factor Analysis (Varimax + Promax)**, and **Hierarchical Agglomerative Clustering (+ Hierarchical Risk Parity)**, and publishes 9 formatted analytical tabs to the `Data Exploration - PCA, FA, Clustering` Google Sheet.
+3. **Agent 3 (`data_exploration.py`)**: Consumes Agent 2's `ML_Ready_Dataset`, runs **Full-Sample PCA**, **Strictly Causal Rolling PCA (252d & 63d)**, **Maximum Likelihood Factor Analysis (Varimax + Promax)**, and **Hierarchical Agglomerative Clustering (+ Hierarchical Risk Parity)**, and publishes 10 formatted analytical & visual tabs to the `3. Data Exploration - PCA, FA, Clustering` Google Sheet.
+4. **Agent 4 (`market_insight_agent.py`)**: Consumes Agent 3's outputs, extracts deterministic cross-asset regime/loading/factor/HRP signals, enriches them with **live Google Search-grounded ongoing macro developments** via the Gemini API (with an automatic deterministic fallback offline), and publishes easy-to-read native Google Docs into `My Drive → Agent Folder` (**`4. Market Dynamics & Macro Insights`** updated in place + dated snapshots in **`4. Market Insights Archive`**).
 
 ## Directory Structure
 
@@ -11,12 +12,13 @@ A reproducible, strictly causal (zero lookahead bias) three-agent Python pipelin
 financial-ml-preprocessing-agent/
 ├── .github/
 │   └── workflows/
-│       └── run-pipeline.yml              # Tue-Sat 09:00 SGT (Mon-Fri settled closes) & push runner (Agents 1-3)
+│       └── run-pipeline.yml              # Tue-Sat 09:00 SGT (Mon-Fri settled closes) & push runner (Agents 1-4)
 ├── apps_script/
-│   └── Code.gs                           # Google Apps Script Web App bridge (read/append/publish)
+│   └── Code.gs                           # Google Apps Script Web App bridge (Sheets + Drive native Google Docs)
 ├── fetch_daily_data.py                   # Agent 1: Daily 44-asset market data fetcher & sheet appender
 ├── pipeline.py                           # Agent 2: End-to-end causal ML preprocessing & ratio pipeline
 ├── data_exploration.py                   # Agent 3: PCA, Rolling PCA, Factor Analysis & Hierarchical Clustering
+├── market_insight_agent.py               # Agent 4: Deep market dynamics & ongoing macro insight Google Doc publisher
 ├── GEMINI.md                             # Antigravity workspace rule for auto-pushing edits
 ├── requirements.txt                      # Python dependencies
 ├── .env.example                          # Environment variable template
@@ -25,22 +27,12 @@ financial-ml-preprocessing-agent/
     ├── raw/
     │   └── financial_data_raw.csv        # Raw baseline dataset
     ├── processed/                        # Agent 2 outputs (gitignored; uploaded as Actions artifacts)
-    │   ├── Summary_and_Data_Quality.csv
-    │   ├── Preprocessed_Data.csv
-    │   ├── Cross_Asset_Ratios.csv
-    │   ├── ML_Ready_Dataset.csv
-    │   └── Feature_Dictionary.csv
-    └── exploration/                      # Agent 3 outputs (gitignored; uploaded as Actions artifacts)
-        ├── Executive_Summary.csv
-        ├── Visual_Dashboard.csv
-        ├── PCA_Overview_and_Loadings.csv
-        ├── PCA_Scores_TimeSeries.csv
-        ├── Rolling_PCA_Dynamics.csv
-        ├── Rolling_PCA_Loadings_Snapshots.csv
-        ├── Factor_Analysis_Results.csv
-        ├── Factor_Scores_TimeSeries.csv
-        ├── Hierarchical_Clustering.csv
-        └── Correlation_and_Distance_Matrix.csv
+    ├── exploration/                      # Agent 3 outputs (gitignored; uploaded as Actions artifacts)
+    └── insights/                         # Agent 4 outputs (gitignored; uploaded as Actions artifacts)
+        ├── latest_report.html
+        ├── YYYY-MM-DD - Market Dynamics & Macro Insights.html
+        ├── latest_report.md
+        └── quantitative_brief.json
 ```
 
 ## Prerequisites
@@ -89,15 +81,28 @@ py data_exploration.py --skip-fetch --skip-upload
 py data_exploration.py --skip-fetch
 ```
 
+### Agent 4: Deep Market Dynamics & Macro Insights (Google Drive Publisher)
+```powershell
+# Standalone run (fetches Agent 3 sheet, synthesizes insights, publishes native Google Docs to Agent Folder)
+py market_insight_agent.py
+
+# Fast offline verification from local Agent 3 CSVs without uploading or calling Gemini
+py market_insight_agent.py --skip-fetch --skip-upload --no-llm
+
+# Chained run right after Agent 3 via Apps Script bridge
+py market_insight_agent.py --skip-fetch --backend webapp
+```
+
 ## Running on GitHub Actions
 
-This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflows/run-pipeline.yml), which runs Agents 1 → 2 → 3 automatically on every push to `main`, Tue–Sat at 09:00 SGT, and manually from the **Actions** tab.
+This repository includes [`.github/workflows/run-pipeline.yml`](.github/workflows/run-pipeline.yml), which runs Agents 1 → 2 → 3 → 4 automatically on every push to `main`, Tue–Sat at 09:00 SGT, and manually from the **Actions** tab.
 
-- **Without secrets configured**: The workflow runs Agents 2 & 3 in offline verification mode (`--skip-fetch --skip-upload`) using `data/raw/financial_data_raw.csv` and uploads both `processed-ml-datasets` and `data-exploration-outputs` as downloadable workflow artifacts.
-- **With Google Sheets sync enabled (Option A — Google Apps Script, no Google Cloud needed):**
+- **Without secrets configured**: The workflow runs Agents 2, 3, and 4 in offline verification mode (`--skip-fetch --skip-upload`) using `data/raw/financial_data_raw.csv` and uploads `processed-ml-datasets`, `data-exploration-outputs`, and `market-insights-outputs` as downloadable workflow artifacts.
+- **With Google Sheets & Drive sync enabled (Option A — Google Apps Script, no Google Cloud needed):**
   1. Open your destination Google Sheet and click **Extensions → Apps Script**.
-  2. Paste [`apps_script/Code.gs`](apps_script/Code.gs), replace `API_TOKEN` with a strong secret token, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*). *(Includes `apply_color_scales` and `rebuild_charts` so daily runs automatically refresh all 27 heatmaps and 11 charts.)*
-  3. Add `APPS_SCRIPT_URL` (the `/exec` URL), `APPS_SCRIPT_TOKEN`, `SOURCE_SHEET_ID`, `DEST_SHEET_ID`, and `EXPLORATION_SHEET_ID` as GitHub repository secrets under **Settings → Secrets and variables → Actions**.
+  2. Paste [`apps_script/Code.gs`](apps_script/Code.gs), replace `API_TOKEN` with your secret token, and click **Deploy → Manage deployments → Edit → New version → Deploy** (or **New deployment → Web app**, *Execute as: Me*, *Who has access: Anyone*). Authorize the requested Drive scope so `publish_doc` can update `4. Market Dynamics & Macro Insights` and save dated archives inside `My Drive → Agent Folder`.
+  3. Under GitHub **Settings → Secrets and variables → Actions**, ensure you have `APPS_SCRIPT_URL`, `APPS_SCRIPT_TOKEN`, `SOURCE_SHEET_ID`, `DEST_SHEET_ID`, and `EXPLORATION_SHEET_ID`.
+  4. **For Agent 4 live ongoing macro developments:** Add **`GEMINI_API_KEY`** (from Google AI Studio) to GitHub Secrets so Agent 4 uses Gemini with Google Search grounding. *(Optional: set `DRIVE_AGENT_FOLDER_ID`, `INSIGHT_MASTER_DOC_ID`, `INSIGHT_ARCHIVE_FOLDER_ID`, or `GEMINI_MODEL`; if omitted, Apps Script auto-locates `Agent Folder` and `4. Market Dynamics & Macro Insights` by name.)*
 - **With Google Sheets sync enabled (Option B — Google Cloud Service Account):**
   1. In Google Cloud Console, enable the **Google Sheets API**, create a **Service Account**, and download its JSON key.
   2. Share your source Google Sheet (**Viewer**) and destination Google Sheets (**Editor**) with the service account's email address.

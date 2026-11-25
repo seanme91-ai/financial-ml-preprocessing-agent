@@ -1,4 +1,4 @@
-name: Daily Financial Data Update, ML Preprocessing & Exploration Pipeline
+name: Daily Financial Data Update, ML Preprocessing, Exploration & Market Insights (Agents 1-4)
 
 on:
   schedule:
@@ -10,12 +10,17 @@ on:
   workflow_dispatch:
     inputs:
       skip_daily_fetch:
-        description: "Skip Agent 1 daily market fetch (run Agent 2 & Agent 3 only)"
+        description: "Skip Agent 1 daily market fetch (run Agents 2-4 only)"
         required: false
         default: false
         type: boolean
       skip_exploration:
         description: "Skip Agent 3 data exploration (PCA, Rolling PCA, FA, Clustering)"
+        required: false
+        default: false
+        type: boolean
+      skip_insights:
+        description: "Skip Agent 4 market dynamics & macro insight report generation"
         required: false
         default: false
         type: boolean
@@ -93,6 +98,30 @@ jobs:
             python data_exploration.py --skip-fetch --skip-upload
           fi
 
+      - name: "Agent 4: Synthesize deep market dynamics & publish Google Docs to Agent Folder"
+        if: ${{ inputs.skip_exploration != true && inputs.skip_insights != true }}
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          EXPLORATION_SHEET_ID: ${{ secrets.EXPLORATION_SHEET_ID }}
+          DRIVE_AGENT_FOLDER_ID: ${{ secrets.DRIVE_AGENT_FOLDER_ID }}
+          INSIGHT_MASTER_DOC_ID: ${{ secrets.INSIGHT_MASTER_DOC_ID }}
+          INSIGHT_ARCHIVE_FOLDER_ID: ${{ secrets.INSIGHT_ARCHIVE_FOLDER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+        run: |
+          if [ -n "$APPS_SCRIPT_URL" ] && [ -n "$APPS_SCRIPT_TOKEN" ]; then
+            echo "Running Agent 4 (market_insight_agent.py) and publishing to Drive via Apps Script..."
+            python market_insight_agent.py --skip-fetch --backend webapp
+          elif [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "Running Agent 4 (market_insight_agent.py) and publishing via Drive API..."
+            python market_insight_agent.py --skip-fetch --backend api
+          else
+            echo "::notice::No Google Drive cloud credentials set. Running Agent 4 offline report generation."
+            python market_insight_agent.py --skip-fetch --skip-upload
+          fi
+
       - name: Upload processed CSV outputs (Agent 2)
         uses: actions/upload-artifact@v4
         with:
@@ -106,4 +135,12 @@ jobs:
         with:
           name: data-exploration-outputs
           path: data/exploration/*.csv
+          retention-days: 14
+
+      - name: Upload market insight reports (Agent 4)
+        if: ${{ inputs.skip_exploration != true && inputs.skip_insights != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-insights-outputs
+          path: data/insights/*
           retention-days: 14
